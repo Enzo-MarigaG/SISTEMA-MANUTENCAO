@@ -1,0 +1,188 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── USUÁRIOS / TÉCNICOS ─────────────────────────────
+model User {
+  id         String   @id @default(uuid())
+  name       String
+  email      String   @unique
+  password   String
+  role       Role     @default(TECHNICIAN)
+  hourlyRate Float?
+  phone      String?
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  serviceOrders ServiceOrder[]
+  workHours     WorkHour[]
+}
+
+enum Role {
+  ADMIN
+  TECHNICIAN
+  VIEWER
+}
+
+// ─── CLIENTES ────────────────────────────────────────
+model Customer {
+  id        String   @id @default(uuid())
+  name      String
+  email     String?
+  phone     String?
+  document  String?
+  address   String?
+  city      String?
+  notes     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  serviceOrders ServiceOrder[]
+}
+
+// ─── ORDENS DE SERVIÇO ───────────────────────────────
+model ServiceOrder {
+  id              String      @id @default(uuid())
+  orderNumber     Int         @unique @default(autoincrement())
+  customer        Customer    @relation(fields: [customerId], references: [id])
+  customerId      String
+  technician      User?       @relation(fields: [technicianId], references: [id])
+  technicianId    String?
+  equipment       String?
+  problemReported String
+  serviceDone     String?
+  observations    String?
+  status          OrderStatus @default(OPEN)
+  entryDate       DateTime    @default(now())
+  exitDate        DateTime?
+  estimatedDate   DateTime?
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  orderParts      OrderPart[]
+  workHours       WorkHour[]
+  additionalCosts AdditionalCost[]
+  payments        Payment[]
+  attachments     Attachment[]
+}
+
+enum OrderStatus {
+  OPEN
+  IN_PROGRESS
+  FINISHED
+  DELIVERED
+}
+
+// ─── PEÇAS (CATÁLOGO) ────────────────────────────────
+model Part {
+  id        String   @id @default(uuid())
+  name      String
+  sku       String?
+  unitPrice Float
+  stockQty  Int      @default(0)
+  minStock  Int      @default(0)
+  createdAt DateTime @default(now())
+
+  orderParts     OrderPart[]
+  stockMovements StockMovement[]
+}
+
+// ─── PEÇAS USADAS NA OS ──────────────────────────────
+model OrderPart {
+  id             String       @id @default(uuid())
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  serviceOrderId String
+  part           Part?        @relation(fields: [partId], references: [id])
+  partId         String?
+  partName       String
+  quantity       Int
+  unitPrice      Float
+  totalPrice     Float
+  createdAt      DateTime     @default(now())
+}
+
+// ─── HORAS TRABALHADAS ───────────────────────────────
+model WorkHour {
+  id             String       @id @default(uuid())
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  serviceOrderId String
+  technician     User         @relation(fields: [technicianId], references: [id])
+  technicianId   String
+  hours          Float
+  hourlyRate     Float
+  totalCost      Float
+  workedDate     DateTime
+  description    String?
+  createdAt      DateTime     @default(now())
+}
+
+// ─── CUSTOS ADICIONAIS ───────────────────────────────
+model AdditionalCost {
+  id             String       @id @default(uuid())
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  serviceOrderId String
+  description    String
+  amount         Float
+  createdAt      DateTime     @default(now())
+}
+
+// ─── PAGAMENTOS ──────────────────────────────────────
+model Payment {
+  id             String        @id @default(uuid())
+  serviceOrder   ServiceOrder  @relation(fields: [serviceOrderId], references: [id])
+  serviceOrderId String
+  amountPaid     Float
+  paymentMethod  PaymentMethod @default(PIX)
+  paymentStatus  PaymentStatus @default(PENDING)
+  paymentDate    DateTime?
+  notes          String?
+  createdAt      DateTime      @default(now())
+}
+
+enum PaymentMethod {
+  CASH
+  PIX
+  CREDIT_CARD
+  DEBIT_CARD
+  TRANSFER
+  OTHER
+}
+
+enum PaymentStatus {
+  PAID
+  PENDING
+  PARTIAL
+}
+
+// ─── ARQUIVOS (fotos, documentos) ────────────────────
+model Attachment {
+  id             String       @id @default(uuid())
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  serviceOrderId String
+  fileUrl        String
+  fileName       String?
+  fileType       String?
+  createdAt      DateTime     @default(now())
+}
+
+// ─── MOVIMENTAÇÃO DE ESTOQUE ─────────────────────────
+model StockMovement {
+  id        String            @id @default(uuid())
+  part      Part              @relation(fields: [partId], references: [id])
+  partId    String
+  type      StockMovementType
+  quantity  Int
+  reason    String?
+  createdAt DateTime          @default(now())
+}
+
+enum StockMovementType {
+  IN
+  OUT
+  ADJUSTMENT
+}

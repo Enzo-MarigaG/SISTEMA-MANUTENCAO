@@ -1,0 +1,32 @@
+# Dependências
+node_modules/
+
+# Ambiente (NUNCA commitar)
+.env
+.env.local
+.env.development
+.env.production
+
+# Prisma
+/generated/prisma
+
+# Build
+dist/
+build/
+
+# Logs
+*.log
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+
+# VS Code
+.vscode/
+
+# TypeScript
+*.tsbuildinfo
+
+# Cache
+.next/
+.cache/
