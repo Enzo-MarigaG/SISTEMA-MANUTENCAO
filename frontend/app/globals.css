@@ -128,3 +128,37 @@
     @apply font-sans;
   }
 }
+
+@media print {
+  body {
+    background: white !important;
+    color: black !important;
+    font-size: 12px;
+  }
+
+  .print\:hidden {
+    display: none !important;
+  }
+
+  aside,
+  header,
+  nav {
+    display: none !important;
+  }
+
+  main {
+    padding: 0 !important;
+  }
+
+  .bg-card,
+  .bg-muted\/30,
+  .bg-muted\/40 {
+    background: white !important;
+    border-color: #e5e7eb !important;
+  }
+
+  @page {
+    margin: 1.5cm;
+    size: A4;
+  }
+}

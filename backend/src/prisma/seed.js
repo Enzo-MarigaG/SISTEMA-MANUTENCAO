@@ -1,9 +1,7 @@
-import { PrismaClient } from '@prisma/client';
-import { PrismaPg } from '@prisma/adapter-pg';
-import * as bcrypt from 'bcrypt';
-import * as dotenv from 'dotenv';
-
-dotenv.config();
+const { PrismaClient } = require('@prisma/client');
+const { PrismaPg } = require('@prisma/adapter-pg');
+const bcrypt = require('bcrypt');
+require('dotenv').config();
 
 const adapter = new PrismaPg({
   connectionString: process.env.DATABASE_URL,
@@ -17,13 +15,15 @@ async function main() {
       name: 'Enzo',
       email: 'enzomariga1@gmail.com',
       password: 'Copagenzo123',
-      role: 'ADMIN' as const,
+      role: 'ADMIN',
+      pixKey: null,
     },
     {
       name: 'Ariel',
       email: 'kedffe@gmail.com',
       password: 'Ariel#4321',
-      role: 'ADMIN' as const,
+      role: 'ADMIN',
+      pixKey: '(54) 992665632',
     },
   ];
 
@@ -31,15 +31,19 @@ async function main() {
     const hashed = await bcrypt.hash(user.password, 10);
     const created = await prisma.user.upsert({
       where: { email: user.email },
-      update: {},
+      update: {
+        name: user.name,
+        pixKey: user.pixKey,
+      },
       create: {
         name: user.name,
         email: user.email,
         password: hashed,
         role: user.role,
+        pixKey: user.pixKey,
       },
     });
-    console.log(`✅ Usuário: ${created.name} (${created.email})`);
+    console.log(`✅ Usuário: ${created.name} (${created.email}) — PIX: ${created.pixKey ?? 'não definido'}`);
   }
 }
 
