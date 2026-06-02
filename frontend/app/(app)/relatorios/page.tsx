@@ -720,7 +720,7 @@ export default function RelatoriosPage() {
                 width={42}
               />
               <Tooltip
-                formatter={(v: number) => [fmt(v), 'Faturamento']}
+                formatter={(v) => [fmt(Number(v ?? 0)), 'Faturamento']}
                 contentStyle={{
                   background: 'var(--color-card)',
                   border: '1px solid var(--color-border)',
@@ -761,7 +761,7 @@ export default function RelatoriosPage() {
                   </Pie>
                   <Legend formatter={(v) => <span style={{ fontSize: 12 }}>{v}</span>} />
                   <Tooltip
-                    formatter={(v: number) => [v, 'OS']}
+                    formatter={(v) => [Number(v ?? 0), 'OS']}
                     contentStyle={{
                       background: 'var(--color-card)',
                       border: '1px solid var(--color-border)',

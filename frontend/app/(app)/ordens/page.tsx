@@ -8,7 +8,7 @@ import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
-import { Plus, Search, Eye, X, UserPlus, Users, ClipboardX } from 'lucide-react';
+import { Plus, Search, Eye, X, UserPlus, Users, ClipboardX, ChevronLeft, ChevronRight, Trash2, AlertTriangle } from 'lucide-react';
 
 type OrderStatus = 'OPEN' | 'IN_PROGRESS' | 'FINISHED' | 'DELIVERED';
 
@@ -225,24 +225,41 @@ const statusFilters: { value: OrderStatus | ''; label: string }[] = [
   { value: 'FINISHED', label: 'Finalizadas' },
 ];
 
+interface PaginatedOrders {
+  data: ServiceOrder[];
+  total: number;
+  page: number;
+  limit: number;
+  totalPages: number;
+}
+
 export default function OrdensPage() {
   const router = useRouter();
   const qc = useQueryClient();
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<OrderStatus | ''>('');
+  const [page, setPage] = useState(1);
   const [showCreate, setShowCreate] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ServiceOrder | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
-  const { data: orders = [], isLoading } = useQuery<ServiceOrder[]>({
-    queryKey: ['service-orders', search, filterStatus],
+  const { data: paginatedOrders, isLoading } = useQuery<PaginatedOrders>({
+    queryKey: ['service-orders', search, filterStatus, page],
     queryFn: () =>
       api.get('/service-orders', {
         params: {
           ...(search && { search }),
           ...(filterStatus && { status: filterStatus }),
+          page,
+          limit: 50,
         },
       }).then((r) => r.data),
   });
+
+  const orders = paginatedOrders?.data ?? [];
+  const totalPages = paginatedOrders?.totalPages ?? 1;
+  const total = paginatedOrders?.total ?? 0;
 
   const { data: customers = [] } = useQuery<Customer[]>({
     queryKey: ['customers-select'],
@@ -279,11 +296,27 @@ export default function OrdensPage() {
       qc.invalidateQueries({ queryKey: ['customers'] });
       setCreateError(null);
       setShowCreate(false);
+      setPage(1);
     },
     onError: (err: unknown) => {
       const msg =
         (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
       setCreateError(Array.isArray(msg) ? msg.join(', ') : (msg ?? 'Erro ao criar ordem de serviço'));
+    },
+  });
+
+  const deleteMutation = useMutation({
+    mutationFn: (orderId: string) => api.delete(`/service-orders/${orderId}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['service-orders'] });
+      qc.invalidateQueries({ queryKey: ['service-orders-stats'] });
+      setDeleteTarget(null);
+      setDeleteError(null);
+    },
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
+      setDeleteError(Array.isArray(msg) ? msg.join(', ') : (msg ?? 'Erro ao excluir ordem de serviço'));
     },
   });
 
@@ -295,7 +328,7 @@ export default function OrdensPage() {
         <div>
           <h1 className="text-xl font-semibold">Ordens de Serviço</h1>
           <p className="text-sm text-muted-foreground">
-            {orders.length} ordem{orders.length !== 1 ? 's' : ''} encontrada{orders.length !== 1 ? 's' : ''}
+            {total} ordem{total !== 1 ? 's' : ''} encontrada{total !== 1 ? 's' : ''}
           </p>
         </div>
         <Button onClick={() => setShowCreate(true)} size="sm">
@@ -313,14 +346,14 @@ export default function OrdensPage() {
             placeholder="Buscar por cliente, equipamento ou problema..."
             className="w-full rounded-lg border border-input bg-background pl-9 pr-4 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/50 focus:border-ring transition-colors"
             value={search}
-            onChange={(e) => setSearch(e.target.value)}
+            onChange={(e) => { setSearch(e.target.value); setPage(1); }}
           />
         </div>
         <div className="flex gap-1.5 flex-wrap">
           {statusFilters.map(({ value, label }) => (
             <button
               key={value}
-              onClick={() => setFilterStatus(value)}
+              onClick={() => { setFilterStatus(value); setPage(1); }}
               className={`px-3 py-1.5 rounded-full text-xs font-medium transition-colors border
                 ${filterStatus === value
                   ? 'bg-foreground text-background border-foreground'
@@ -350,14 +383,23 @@ export default function OrdensPage() {
             {orders.map((o) => {
               const cfg = statusConfig[o.status];
               return (
-                <button
+                <div
                   key={o.id}
                   onClick={() => router.push(`/ordens/${o.id}`)}
-                  className={`w-full text-left bg-card border border-l-4 ${cfg.cardBorder} border-border rounded-xl p-4 hover:bg-muted/30 transition-colors active:scale-[0.99]`}
+                  className={`w-full text-left bg-card border border-l-4 ${cfg.cardBorder} border-border rounded-xl p-4 hover:bg-muted/30 transition-colors active:scale-[0.99] cursor-pointer`}
                 >
                   <div className="flex items-start justify-between gap-2 mb-1.5">
                     <p className="font-semibold text-sm">OS #{o.orderNumber}</p>
-                    <StatusBadge status={o.status} />
+                    <div className="flex items-center gap-2">
+                      <StatusBadge status={o.status} />
+                      <button
+                        onClick={(e) => { e.stopPropagation(); setDeleteError(null); setDeleteTarget(o); }}
+                        className="p-1 -m-1 text-muted-foreground hover:text-destructive transition-colors"
+                        title="Excluir OS"
+                      >
+                        <Trash2 className="size-4" />
+                      </button>
+                    </div>
                   </div>
                   <p className="text-sm font-medium">{o.customer.name}</p>
                   {o.equipment && <p className="text-xs text-muted-foreground mt-0.5">{o.equipment}</p>}
@@ -365,7 +407,7 @@ export default function OrdensPage() {
                   <p className="text-xs text-muted-foreground mt-2">
                     Entrada: {new Date(o.entryDate).toLocaleDateString('pt-BR')}
                   </p>
-                </button>
+                </div>
               );
             })}
           </div>
@@ -404,14 +446,23 @@ export default function OrdensPage() {
                           {new Date(o.entryDate).toLocaleDateString('pt-BR')}
                         </td>
                         <td className="px-5 py-3.5">
-                          <button
-                            onClick={() => router.push(`/ordens/${o.id}`)}
-                            className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted"
-                            title="Ver detalhes"
-                          >
-                            <Eye className="size-3.5" />
-                            <span className="hidden xl:inline">Ver</span>
-                          </button>
+                          <div className="flex items-center gap-1">
+                            <button
+                              onClick={() => router.push(`/ordens/${o.id}`)}
+                              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded-md hover:bg-muted"
+                              title="Ver detalhes"
+                            >
+                              <Eye className="size-3.5" />
+                              <span className="hidden xl:inline">Ver</span>
+                            </button>
+                            <button
+                              onClick={() => { setDeleteError(null); setDeleteTarget(o); }}
+                              className="flex items-center text-xs text-muted-foreground hover:text-destructive transition-colors px-2 py-1 rounded-md hover:bg-muted"
+                              title="Excluir OS"
+                            >
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -421,6 +472,28 @@ export default function OrdensPage() {
             </div>
           </div>
         </>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between text-sm text-muted-foreground">
+          <span>Página {page} de {totalPages}</span>
+          <div className="flex gap-1">
+            <button
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              disabled={page === 1}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              <ChevronLeft className="size-4" /> Anterior
+            </button>
+            <button
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              disabled={page === totalPages}
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-border hover:bg-muted disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            >
+              Próxima <ChevronRight className="size-4" />
+            </button>
+          </div>
+        </div>
       )}
 
       {showCreate && (
@@ -436,6 +509,54 @@ export default function OrdensPage() {
             onCancel={() => { setShowCreate(false); setCreateError(null); }}
             isSubmitting={createMutation.isPending}
           />
+        </Modal>
+      )}
+
+      {deleteTarget && (
+        <Modal
+          title="Excluir Ordem de Serviço"
+          onClose={() => { setDeleteTarget(null); setDeleteError(null); }}
+        >
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+                <AlertTriangle className="size-5 text-destructive" />
+              </div>
+              <div className="text-sm">
+                <p>
+                  Tem certeza que deseja excluir a{' '}
+                  <span className="font-semibold">OS #{deleteTarget.orderNumber}</span> de{' '}
+                  <span className="font-semibold">{deleteTarget.customer.name}</span>?
+                </p>
+                <p className="text-muted-foreground mt-1">
+                  Esta ação é permanente. Peças, horas, custos e pagamentos
+                  vinculados também serão removidos. As peças do catálogo voltam ao estoque.
+                </p>
+              </div>
+            </div>
+
+            {deleteError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                {deleteError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button
+                variant="outline"
+                onClick={() => { setDeleteTarget(null); setDeleteError(null); }}
+              >
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => deleteMutation.mutate(deleteTarget.id)}
+                disabled={deleteMutation.isPending}
+              >
+                {deleteMutation.isPending ? 'Excluindo...' : 'Excluir'}
+              </Button>
+            </div>
+          </div>
         </Modal>
       )}
     </div>

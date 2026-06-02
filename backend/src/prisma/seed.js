@@ -12,29 +12,30 @@ const prisma = new PrismaClient({ adapter });
 async function main() {
   const users = [
     {
-      name: 'Enzo',
-      email: 'enzomariga1@gmail.com',
-      password: 'Copagenzo123',
+      name:     process.env.SEED_USER1_NAME     ?? 'Usuário 1',
+      email:    process.env.SEED_USER1_EMAIL    ?? '',
+      password: process.env.SEED_USER1_PASSWORD ?? '',
       role: 'ADMIN',
-      pixKey: null,
+      pixKey: process.env.SEED_USER1_PIXKEY ?? null,
     },
     {
-      name: 'Ariel',
-      email: 'kedffe@gmail.com',
-      password: 'Ariel#4321',
+      name:     process.env.SEED_USER2_NAME     ?? 'Usuário 2',
+      email:    process.env.SEED_USER2_EMAIL    ?? '',
+      password: process.env.SEED_USER2_PASSWORD ?? '',
       role: 'ADMIN',
-      pixKey: '(54) 992665632',
+      pixKey: process.env.SEED_USER2_PIXKEY ?? null,
     },
   ];
 
   for (const user of users) {
+    if (!user.email || !user.password) {
+      console.warn(`⚠️  Pulando usuário sem email/senha: ${user.name}`);
+      continue;
+    }
     const hashed = await bcrypt.hash(user.password, 10);
     const created = await prisma.user.upsert({
       where: { email: user.email },
-      update: {
-        name: user.name,
-        pixKey: user.pixKey,
-      },
+      update: { name: user.name, pixKey: user.pixKey },
       create: {
         name: user.name,
         email: user.email,
@@ -43,7 +44,7 @@ async function main() {
         pixKey: user.pixKey,
       },
     });
-    console.log(`✅ Usuário: ${created.name} (${created.email}) — PIX: ${created.pixKey ?? 'não definido'}`);
+    console.log(`✅ ${created.name} (${created.email}) — PIX: ${created.pixKey ?? 'não definido'}`);
   }
 }
 

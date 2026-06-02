@@ -3,7 +3,7 @@
 import { useState, use } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useForm } from 'react-hook-form';
+import { useForm, type Resolver } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import api from '@/lib/api';
@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import {
   ArrowLeft, Plus, Trash2, X, Printer, ChevronRight,
   User, Wrench, Package, Clock, Receipt, CreditCard,
-  CalendarDays, FileText, DollarSign,
+  CalendarDays, FileText, DollarSign, AlertTriangle,
 } from 'lucide-react';
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
@@ -187,6 +187,8 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const router  = useRouter();
   const qc      = useQueryClient();
   const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | null>(null);
+  const [showDelete, setShowDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const { data: order, isLoading } = useQuery<ServiceOrder>({
     queryKey: ['service-order', id],
@@ -219,6 +221,19 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const removeCostMutation   = useMutation({ mutationFn: (costId: string) => api.delete(`/service-orders/${id}/additional-costs/${costId}`), onSuccess: invalidate });
   const addPaymentMutation   = useMutation({ mutationFn: (data: z.infer<typeof paymentSchema>) => api.post(`/service-orders/${id}/payments`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removePaymentMutation = useMutation({ mutationFn: (paymentId: string) => api.delete(`/service-orders/${id}/payments/${paymentId}`), onSuccess: invalidate });
+  const deleteOrderMutation = useMutation({
+    mutationFn: () => api.delete(`/service-orders/${id}`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['service-orders'] });
+      qc.invalidateQueries({ queryKey: ['service-orders-stats'] });
+      router.replace('/ordens');
+    },
+    onError: (err: unknown) => {
+      const msg =
+        (err as { response?: { data?: { message?: string | string[] } } })?.response?.data?.message;
+      setDeleteError(Array.isArray(msg) ? msg.join(', ') : (msg ?? 'Erro ao excluir ordem de serviço'));
+    },
+  });
 
   if (isLoading || !order) {
     return (
@@ -286,6 +301,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               >
                 <Printer className="size-4" />
                 Baixar PDF
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => { setDeleteError(null); setShowDelete(true); }}
+              >
+                <Trash2 className="size-4" />
+                Excluir
               </Button>
             </div>
           </div>
@@ -641,6 +663,48 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       {modal === 'payment' && (
         <PaymentModal defaultDate={today} grandTotal={summary?.grandTotal} onClose={() => setModal(null)} onSubmit={(d) => addPaymentMutation.mutate(d)} isLoading={addPaymentMutation.isPending} />
       )}
+
+      {showDelete && (
+        <Modal title="Excluir Ordem de Serviço" onClose={() => { setShowDelete(false); setDeleteError(null); }}>
+          <div className="space-y-4">
+            <div className="flex items-start gap-3">
+              <div className="shrink-0 w-10 h-10 rounded-full bg-destructive/10 flex items-center justify-center">
+                <AlertTriangle className="size-5 text-destructive" />
+              </div>
+              <div className="text-sm">
+                <p>
+                  Tem certeza que deseja excluir a{' '}
+                  <span className="font-semibold">OS #{order.orderNumber}</span> de{' '}
+                  <span className="font-semibold">{order.customer.name}</span>?
+                </p>
+                <p className="text-muted-foreground mt-1">
+                  Esta ação é permanente. Peças, horas, custos e pagamentos
+                  vinculados também serão removidos. As peças do catálogo voltam ao estoque.
+                </p>
+              </div>
+            </div>
+
+            {deleteError && (
+              <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                {deleteError}
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2 pt-1">
+              <Button variant="outline" onClick={() => { setShowDelete(false); setDeleteError(null); }}>
+                Cancelar
+              </Button>
+              <Button
+                variant="destructive"
+                onClick={() => deleteOrderMutation.mutate()}
+                disabled={deleteOrderMutation.isPending}
+              >
+                {deleteOrderMutation.isPending ? 'Excluindo...' : 'Excluir'}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }
@@ -655,7 +719,9 @@ function PartModal({ parts, onClose, onSubmit, isLoading }: {
   onSubmit: (d: z.infer<typeof partSchema>) => void;
   isLoading: boolean;
 }) {
-  const { register, handleSubmit, setValue, formState: { errors } } = useForm<z.infer<typeof partSchema>>({ resolver: zodResolver(partSchema) });
+  const { register, handleSubmit, setValue, formState: { errors } } = useForm<z.infer<typeof partSchema>>({
+    resolver: zodResolver(partSchema) as Resolver<z.infer<typeof partSchema>>,
+  });
 
   function selectCatalog(e: React.ChangeEvent<HTMLSelectElement>) {
     const part = parts.find(p => p.id === e.target.value);
@@ -705,7 +771,7 @@ function WorkHourModal({ defaultDate, onClose, onSubmit, isLoading }: {
   isLoading: boolean;
 }) {
   const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof workHourSchema>>({
-    resolver: zodResolver(workHourSchema),
+    resolver: zodResolver(workHourSchema) as Resolver<z.infer<typeof workHourSchema>>,
     defaultValues: { workedDate: defaultDate, hourlyRate: 80 },
   });
   return (
@@ -744,7 +810,9 @@ function CostModal({ onClose, onSubmit, isLoading }: {
   onSubmit: (d: z.infer<typeof costSchema>) => void;
   isLoading: boolean;
 }) {
-  const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof costSchema>>({ resolver: zodResolver(costSchema) });
+  const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof costSchema>>({
+    resolver: zodResolver(costSchema) as Resolver<z.infer<typeof costSchema>>,
+  });
   return (
     <Modal title="Custo Adicional" onClose={onClose}>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
@@ -774,7 +842,7 @@ function PaymentModal({ defaultDate, grandTotal, onClose, onSubmit, isLoading }:
   isLoading: boolean;
 }) {
   const { register, handleSubmit, setValue } = useForm<z.infer<typeof paymentSchema>>({
-    resolver: zodResolver(paymentSchema),
+    resolver: zodResolver(paymentSchema) as Resolver<z.infer<typeof paymentSchema>>,
     defaultValues: { paymentMethod: 'PIX', paymentStatus: 'PAID', paymentDate: defaultDate },
   });
   return (

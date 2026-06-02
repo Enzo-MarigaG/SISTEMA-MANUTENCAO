@@ -3,7 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { OrderStatus, PaymentMethod, PaymentStatus } from '@prisma/client';
+import { OrderStatus, PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateServiceOrderDto } from './dto/create-service-order.dto.js';
 import { UpdateServiceOrderDto } from './dto/update-service-order.dto.js';
@@ -45,23 +45,36 @@ export class ServiceOrdersService {
     status?: OrderStatus;
     customerId?: string;
     search?: string;
+    page?: number;
+    limit?: number;
   }) {
-    const { status, customerId, search } = filters;
-    return this.prisma.serviceOrder.findMany({
-      where: {
-        ...(status && { status }),
-        ...(customerId && { customerId }),
-        ...(search && {
-          OR: [
-            { equipment: { contains: search, mode: 'insensitive' } },
-            { problemReported: { contains: search, mode: 'insensitive' } },
-            { customer: { name: { contains: search, mode: 'insensitive' } } },
-          ],
-        }),
-      },
-      include: this.listIncludes(),
-      orderBy: { createdAt: 'desc' },
-    });
+    const { status, customerId, search, page = 1, limit = 50 } = filters;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.ServiceOrderWhereInput = {
+      ...(status && { status }),
+      ...(customerId && { customerId }),
+      ...(search && {
+        OR: [
+          { equipment: { contains: search, mode: Prisma.QueryMode.insensitive } },
+          { problemReported: { contains: search, mode: Prisma.QueryMode.insensitive } },
+          { customer: { name: { contains: search, mode: Prisma.QueryMode.insensitive } } },
+        ],
+      }),
+    };
+
+    const [data, total] = await this.prisma.$transaction([
+      this.prisma.serviceOrder.findMany({
+        where,
+        include: this.listIncludes(),
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+      this.prisma.serviceOrder.count({ where }),
+    ]);
+
+    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
   }
 
   async findOne(id: string) {
@@ -106,10 +119,30 @@ export class ServiceOrdersService {
 
   async remove(id: string) {
     const order = await this.findOne(id);
-    if (order.status === OrderStatus.DELIVERED) {
-      throw new BadRequestException('Não é possível excluir uma OS já entregue');
-    }
-    return this.prisma.serviceOrder.delete({ where: { id } });
+
+    // Peças/horas/custos/anexos somem via onDelete: Cascade, mas pagamentos não
+    // têm cascade no schema — precisam ser removidos manualmente. E as peças
+    // vinculadas ao catálogo devem voltar ao estoque, como acontece no removePart.
+    return this.prisma.$transaction(async (tx) => {
+      for (const op of order.orderParts) {
+        if (op.partId) {
+          await tx.part.update({
+            where: { id: op.partId },
+            data: { stockQty: { increment: op.quantity } },
+          });
+          await tx.stockMovement.create({
+            data: {
+              partId: op.partId,
+              type: 'IN',
+              quantity: op.quantity,
+              reason: 'Devolvido ao estoque (exclusão da OS)',
+            },
+          });
+        }
+      }
+      await tx.payment.deleteMany({ where: { serviceOrderId: id } });
+      return tx.serviceOrder.delete({ where: { id } });
+    });
   }
 
   // ─── Peças da OS ────────────────────────────────────────
@@ -126,24 +159,37 @@ export class ServiceOrdersService {
           `Estoque insuficiente. Disponível: ${part.stockQty}`,
         );
       }
-      await this.prisma.part.update({
-        where: { id: dto.partId },
-        data: { stockQty: { decrement: dto.quantity } },
-      });
-      await this.prisma.stockMovement.create({
-        data: {
-          partId: dto.partId,
-          type: 'OUT',
-          quantity: dto.quantity,
-          reason: `Usado na OS`,
-        },
+
+      return this.prisma.$transaction(async (tx) => {
+        await tx.part.update({
+          where: { id: dto.partId },
+          data: { stockQty: { decrement: dto.quantity } },
+        });
+        await tx.stockMovement.create({
+          data: {
+            partId: dto.partId!,
+            type: 'OUT',
+            quantity: dto.quantity,
+            reason: 'Usado na OS',
+          },
+        });
+        return tx.orderPart.create({
+          data: {
+            serviceOrderId,
+            partId: dto.partId,
+            partName: dto.partName,
+            quantity: dto.quantity,
+            unitPrice: dto.unitPrice,
+            totalPrice,
+          },
+          include: { part: true },
+        });
       });
     }
 
     return this.prisma.orderPart.create({
       data: {
         serviceOrderId,
-        partId: dto.partId,
         partName: dto.partName,
         quantity: dto.quantity,
         unitPrice: dto.unitPrice,
@@ -160,17 +206,20 @@ export class ServiceOrdersService {
     if (!orderPart) throw new NotFoundException('Peça não encontrada na OS');
 
     if (orderPart.partId) {
-      await this.prisma.part.update({
-        where: { id: orderPart.partId },
-        data: { stockQty: { increment: orderPart.quantity } },
-      });
-      await this.prisma.stockMovement.create({
-        data: {
-          partId: orderPart.partId,
-          type: 'IN',
-          quantity: orderPart.quantity,
-          reason: 'Devolvido ao estoque (remoção da OS)',
-        },
+      return this.prisma.$transaction(async (tx) => {
+        await tx.part.update({
+          where: { id: orderPart.partId! },
+          data: { stockQty: { increment: orderPart.quantity } },
+        });
+        await tx.stockMovement.create({
+          data: {
+            partId: orderPart.partId!,
+            type: 'IN',
+            quantity: orderPart.quantity,
+            reason: 'Devolvido ao estoque (remoção da OS)',
+          },
+        });
+        return tx.orderPart.delete({ where: { id: orderPartId } });
       });
     }
 

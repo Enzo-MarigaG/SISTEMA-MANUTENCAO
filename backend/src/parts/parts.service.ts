@@ -8,28 +8,30 @@ export class PartsService {
   constructor(private prisma: PrismaService) {}
 
   async create(dto: CreatePartDto) {
-    const part = await this.prisma.part.create({
-      data: {
-        name: dto.name,
-        sku: dto.sku,
-        unitPrice: dto.unitPrice,
-        stockQty: dto.stockQty ?? 0,
-        minStock: dto.minStock ?? 0,
-      },
-    });
-
-    if ((dto.stockQty ?? 0) > 0) {
-      await this.prisma.stockMovement.create({
+    return this.prisma.$transaction(async (tx) => {
+      const part = await tx.part.create({
         data: {
-          partId: part.id,
-          type: 'IN',
-          quantity: dto.stockQty!,
-          reason: 'Estoque inicial',
+          name: dto.name,
+          sku: dto.sku,
+          unitPrice: dto.unitPrice,
+          stockQty: dto.stockQty ?? 0,
+          minStock: dto.minStock ?? 0,
         },
       });
-    }
 
-    return part;
+      if ((dto.stockQty ?? 0) > 0) {
+        await tx.stockMovement.create({
+          data: {
+            partId: part.id,
+            type: 'IN',
+            quantity: dto.stockQty!,
+            reason: 'Estoque inicial',
+          },
+        });
+      }
+
+      return part;
+    });
   }
 
   async findAll(search?: string) {
@@ -81,18 +83,14 @@ export class PartsService {
           ? part.stockQty - quantity
           : quantity;
 
-    await this.prisma.part.update({
-      where: { id },
-      data: { stockQty: newQty },
-    });
-
-    return this.prisma.stockMovement.create({
-      data: {
-        partId: id,
-        type,
-        quantity,
-        reason,
-      },
+    return this.prisma.$transaction(async (tx) => {
+      await tx.part.update({
+        where: { id },
+        data: { stockQty: newQty },
+      });
+      return tx.stockMovement.create({
+        data: { partId: id, type, quantity, reason },
+      });
     });
   }
 

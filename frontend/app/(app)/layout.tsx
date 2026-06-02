@@ -153,8 +153,8 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
     );
   }
 
-  function handleLogout() {
-    logout();
+  async function handleLogout() {
+    await logout();
     router.push('/login');
   }
 
