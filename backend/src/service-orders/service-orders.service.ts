@@ -11,6 +11,21 @@ import { AddOrderPartDto } from './dto/add-order-part.dto.js';
 import { AddWorkHourDto } from './dto/add-work-hour.dto.js';
 import { AddAdditionalCostDto } from './dto/add-additional-cost.dto.js';
 import { AddPaymentDto } from './dto/add-payment.dto.js';
+import { SaveSignaturesDto } from './dto/save-signatures.dto.js';
+import { SaveTravelDto } from './dto/save-travel.dto.js';
+
+/**
+ * Converte uma string de data em Date.
+ * Datas "somente dia" (YYYY-MM-DD), vindas de inputs <input type="date">, são
+ * ancoradas ao meio-dia UTC para que o fuso horário do cliente não exiba o dia
+ * anterior. Timestamps completos (ISO com horário) são preservados.
+ */
+function toDate(value?: string | null): Date | undefined {
+  if (!value) return undefined;
+  return /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? new Date(`${value}T12:00:00.000Z`)
+    : new Date(value);
+}
 
 @Injectable()
 export class ServiceOrdersService {
@@ -33,9 +48,9 @@ export class ServiceOrdersService {
         serviceDone: dto.serviceDone,
         observations: dto.observations,
         status: dto.status,
-        entryDate: dto.entryDate ? new Date(dto.entryDate) : undefined,
-        estimatedDate: dto.estimatedDate ? new Date(dto.estimatedDate) : undefined,
-        exitDate: dto.exitDate ? new Date(dto.exitDate) : undefined,
+        entryDate: toDate(dto.entryDate),
+        estimatedDate: toDate(dto.estimatedDate),
+        exitDate: toDate(dto.exitDate),
       },
       include: this.listIncludes(),
     });
@@ -99,15 +114,18 @@ export class ServiceOrdersService {
 
   async update(id: string, dto: UpdateServiceOrderDto) {
     await this.findOne(id);
-    if (dto.status === OrderStatus.DELIVERED && !dto.exitDate) {
+    // FINISHED é o status de encerramento — registra a data/hora de saída.
+    const isClosing =
+      dto.status === OrderStatus.FINISHED || dto.status === OrderStatus.DELIVERED;
+    if (isClosing && !dto.exitDate) {
       dto.exitDate = new Date().toISOString();
     }
     return this.prisma.serviceOrder.update({
       where: { id },
       data: {
         ...dto,
-        estimatedDate: dto.estimatedDate ? new Date(dto.estimatedDate) : undefined,
-        exitDate: dto.exitDate ? new Date(dto.exitDate) : undefined,
+        estimatedDate: toDate(dto.estimatedDate),
+        exitDate: toDate(dto.exitDate),
       },
       include: this.listIncludes(),
     });
@@ -239,7 +257,7 @@ export class ServiceOrdersService {
         hours: dto.hours,
         hourlyRate: dto.hourlyRate,
         totalCost,
-        workedDate: new Date(dto.workedDate),
+        workedDate: toDate(dto.workedDate)!,
         description: dto.description,
       },
     });
@@ -280,7 +298,7 @@ export class ServiceOrdersService {
         amountPaid: dto.amountPaid,
         paymentMethod: dto.paymentMethod,
         paymentStatus: dto.paymentStatus,
-        paymentDate: dto.paymentDate ? new Date(dto.paymentDate) : new Date(),
+        paymentDate: toDate(dto.paymentDate) ?? new Date(),
         notes: dto.notes,
       },
     });
@@ -294,10 +312,71 @@ export class ServiceOrdersService {
     return this.prisma.payment.delete({ where: { id: paymentId } });
   }
 
+  // ─── Assinaturas ─────────────────────────────────────────
+
+  async saveSignatures(id: string, dto: SaveSignaturesDto) {
+    await this.findOne(id);
+
+    const data: Prisma.ServiceOrderUpdateInput = {};
+    if (dto.signatureTechnician !== undefined)
+      data.signatureTechnician = dto.signatureTechnician;
+    if (dto.signatureCustomer !== undefined)
+      data.signatureCustomer = dto.signatureCustomer;
+
+    // Marca quando houve a última assinatura; zera se ambas forem removidas.
+    const order = await this.prisma.serviceOrder.findUnique({
+      where: { id },
+      select: { signatureTechnician: true, signatureCustomer: true },
+    });
+    const nextTech =
+      dto.signatureTechnician !== undefined
+        ? dto.signatureTechnician
+        : order?.signatureTechnician;
+    const nextCust =
+      dto.signatureCustomer !== undefined
+        ? dto.signatureCustomer
+        : order?.signatureCustomer;
+    data.signedAt = nextTech || nextCust ? new Date() : null;
+
+    return this.prisma.serviceOrder.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        signatureTechnician: true,
+        signatureCustomer: true,
+        signedAt: true,
+      },
+    });
+  }
+
+  // ─── Custos de Viagem ────────────────────────────────────
+
+  async saveTravel(id: string, dto: SaveTravelDto) {
+    await this.findOne(id);
+    const data: Prisma.ServiceOrderUpdateInput = {};
+    if (dto.travelKm !== undefined) data.travelKm = dto.travelKm;
+    if (dto.travelHours !== undefined) data.travelHours = dto.travelHours;
+    if (dto.travelKmRate !== undefined) data.travelKmRate = dto.travelKmRate;
+    if (dto.travelHourRate !== undefined) data.travelHourRate = dto.travelHourRate;
+
+    return this.prisma.serviceOrder.update({
+      where: { id },
+      data,
+      select: {
+        id: true,
+        travelKm: true,
+        travelHours: true,
+        travelKmRate: true,
+        travelHourRate: true,
+      },
+    });
+  }
+
   // ─── Resumo Financeiro ───────────────────────────────────
 
   async getSummary(serviceOrderId: string) {
-    const [parts, workHours, costs, payments] = await Promise.all([
+    const [parts, workHours, costs, payments, order] = await Promise.all([
       this.prisma.orderPart.aggregate({
         where: { serviceOrderId },
         _sum: { totalPrice: true },
@@ -311,18 +390,32 @@ export class ServiceOrdersService {
         _sum: { amount: true },
       }),
       this.prisma.payment.findMany({ where: { serviceOrderId } }),
+      this.prisma.serviceOrder.findUnique({
+        where: { id: serviceOrderId },
+        select: {
+          travelKm: true,
+          travelHours: true,
+          travelKmRate: true,
+          travelHourRate: true,
+        },
+      }),
     ]);
 
     const partsTotal = parts._sum.totalPrice ?? 0;
     const hoursTotal = workHours._sum.totalCost ?? 0;
     const costsTotal = costs._sum.amount ?? 0;
-    const grandTotal = partsTotal + hoursTotal + costsTotal;
+    const travelTotal = order
+      ? order.travelKm * order.travelKmRate +
+        order.travelHours * order.travelHourRate
+      : 0;
+    const grandTotal = partsTotal + hoursTotal + costsTotal + travelTotal;
     const totalPaid = payments.reduce((s, p) => s + p.amountPaid, 0);
 
     return {
       partsTotal,
       hoursTotal,
       costsTotal,
+      travelTotal,
       grandTotal,
       totalPaid,
       remaining: grandTotal - totalPaid,
@@ -350,15 +443,111 @@ export class ServiceOrdersService {
 
   // ─── Stats para Dashboard ────────────────────────────────
 
+  /**
+   * Faturamento de um período = soma do valor total (peças + mão de obra +
+   * custos adicionais + viagem) das OS cujo entryDate cai no período.
+   * Ao contrário do total pago, sobe a cada OS criada/preenchida no mês.
+   */
+  private async revenueForPeriod(start: Date, end?: Date) {
+    const entryDate = end ? { gte: start, lt: end } : { gte: start };
+    const orderFilter = { serviceOrder: { entryDate } };
+
+    const [parts, hours, costs, orders] = await Promise.all([
+      this.prisma.orderPart.aggregate({
+        where: orderFilter,
+        _sum: { totalPrice: true },
+      }),
+      this.prisma.workHour.aggregate({
+        where: orderFilter,
+        _sum: { totalCost: true },
+      }),
+      this.prisma.additionalCost.aggregate({
+        where: orderFilter,
+        _sum: { amount: true },
+      }),
+      this.prisma.serviceOrder.findMany({
+        where: { entryDate },
+        select: {
+          travelKm: true,
+          travelHours: true,
+          travelKmRate: true,
+          travelHourRate: true,
+        },
+      }),
+    ]);
+
+    const travel = orders.reduce(
+      (s, o) =>
+        s + o.travelKm * o.travelKmRate + o.travelHours * o.travelHourRate,
+      0,
+    );
+
+    return (
+      (parts._sum.totalPrice ?? 0) +
+      (hours._sum.totalCost ?? 0) +
+      (costs._sum.amount ?? 0) +
+      travel
+    );
+  }
+
   async getStats() {
-    const [total, open, inProgress, finished, delivered] = await Promise.all([
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const startOfPrevMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+
+    const [
+      total,
+      open,
+      inProgress,
+      finished,
+      delivered,
+      revenueMonth,
+      revenuePrevMonth,
+      revenueTotalAgg,
+      pendingAgg,
+      ordersThisMonth,
+      parts,
+    ] = await Promise.all([
       this.prisma.serviceOrder.count(),
       this.prisma.serviceOrder.count({ where: { status: 'OPEN' } }),
       this.prisma.serviceOrder.count({ where: { status: 'IN_PROGRESS' } }),
       this.prisma.serviceOrder.count({ where: { status: 'FINISHED' } }),
       this.prisma.serviceOrder.count({ where: { status: 'DELIVERED' } }),
+      this.revenueForPeriod(startOfMonth),
+      this.revenueForPeriod(startOfPrevMonth, startOfMonth),
+      this.prisma.payment.aggregate({
+        _sum: { amountPaid: true },
+        where: { paymentStatus: 'PAID' },
+      }),
+      this.prisma.payment.aggregate({
+        _sum: { amountPaid: true },
+        where: { paymentStatus: { in: ['PENDING', 'PARTIAL'] } },
+      }),
+      this.prisma.serviceOrder.count({ where: { entryDate: { gte: startOfMonth } } }),
+      this.prisma.part.findMany({ select: { stockQty: true, minStock: true } }),
     ]);
-    return { total, open, inProgress, finished, delivered };
+
+    const revenueChange =
+      revenuePrevMonth > 0
+        ? Math.round(((revenueMonth - revenuePrevMonth) / revenuePrevMonth) * 100)
+        : null;
+
+    const lowStockParts = parts.filter((p) => p.stockQty <= p.minStock).length;
+
+    return {
+      total,
+      open,
+      inProgress,
+      finished,
+      delivered,
+      revenueMonth,
+      revenuePrevMonth,
+      revenueChange,
+      revenueTotal: revenueTotalAgg._sum.amountPaid ?? 0,
+      pendingAmount: pendingAgg._sum.amountPaid ?? 0,
+      ordersThisMonth,
+      lowStockParts,
+    };
   }
 
   // ─── Helpers ────────────────────────────────────────────

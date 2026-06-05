@@ -220,8 +220,6 @@ function StatusBadge({ status }: { status: OrderStatus }) {
 
 const statusFilters: { value: OrderStatus | ''; label: string }[] = [
   { value: '', label: 'Todos' },
-  { value: 'OPEN', label: 'Abertas' },
-  { value: 'IN_PROGRESS', label: 'Em Andamento' },
   { value: 'FINISHED', label: 'Finalizadas' },
 ];
 

@@ -9,9 +9,6 @@ import { json, urlencoded } from 'express';
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule);
 
-  // Railway/Render colocam o app atrás de um proxy reverso. Sem isto, o Express
-  // vê o IP do proxy (não o do cliente), quebrando o rate limit por IP e a
-  // detecção de HTTPS por trás do TLS terminado no proxy.
   app.set('trust proxy', 1);
 
   app.use(helmet());
@@ -35,10 +32,12 @@ async function bootstrap() {
 
   app.setGlobalPrefix('api');
 
-  // Health check — Railway/Render usam para verificar se o serviço está no ar
-  app.getHttpAdapter().get('/health', (_req: unknown, res: any) => {
-    res.status(200).json({ status: 'ok' });
-  });
+  app
+    .getHttpAdapter()
+    .getInstance()
+    .get('/health', (_req, res) => {
+      res.status(200).json({ status: 'ok' });
+    });
 
   const port = process.env.PORT ?? 3001;
   await app.listen(port, '0.0.0.0');

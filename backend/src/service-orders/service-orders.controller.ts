@@ -20,6 +20,8 @@ import { AddOrderPartDto } from './dto/add-order-part.dto.js';
 import { AddWorkHourDto } from './dto/add-work-hour.dto.js';
 import { AddAdditionalCostDto } from './dto/add-additional-cost.dto.js';
 import { AddPaymentDto } from './dto/add-payment.dto.js';
+import { SaveSignaturesDto } from './dto/save-signatures.dto.js';
+import { SaveTravelDto } from './dto/save-travel.dto.js';
 
 @UseGuards(JwtAuthGuard)
 @Controller('service-orders')
@@ -94,6 +96,20 @@ export class ServiceOrdersController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.serviceOrdersService.remove(id);
+  }
+
+  // ─── Assinaturas ─────────────────────────────────────────
+
+  @Patch(':id/signatures')
+  saveSignatures(@Param('id') id: string, @Body() dto: SaveSignaturesDto) {
+    return this.serviceOrdersService.saveSignatures(id, dto);
+  }
+
+  // ─── Custos de Viagem ────────────────────────────────────
+
+  @Patch(':id/travel')
+  saveTravel(@Param('id') id: string, @Body() dto: SaveTravelDto) {
+    return this.serviceOrdersService.saveTravel(id, dto);
   }
 
   // ─── Resumo financeiro ───────────────────────────────────

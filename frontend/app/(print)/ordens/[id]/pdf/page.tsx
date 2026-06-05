@@ -7,7 +7,7 @@ import api from '@/lib/api';
 const fmt = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtDate = (d: string) => new Date(d).toLocaleDateString('pt-BR');
 
-async function gerarPdf(order: any, summary: any) {
+async function gerarPdf(order: any, summary: any, hideValues = false) {
   const { jsPDF } = await import('jspdf');
 
   const pdf = new jsPDF('p', 'mm', 'a4');
@@ -56,7 +56,10 @@ async function gerarPdf(order: any, summary: any) {
   y = 14;
   text('ARC SOLUÇÕES INDUSTRIAIS', L, y, { size: 15, bold: true });
   nl(6);
-  text(`Ordem de Serviço ${order.orderNumber}`, L, y, { size: 10, color: [80, 80, 80] });
+  text(
+    `Ordem de Serviço ${order.orderNumber}${hideValues ? '  ·  Via do funcionário' : ''}`,
+    L, y, { size: 10, color: [80, 80, 80] }
+  );
   nl(5);
   text(
     `Emitido em ${new Date().toLocaleDateString('pt-BR', { day: '2-digit', month: 'long', year: 'numeric' })}`,
@@ -133,16 +136,24 @@ async function gerarPdf(order: any, summary: any) {
     sectionTitle('Peças Utilizadas');
     nl(4);
     text('Peça', L, y, { size: 7, bold: true, color: [100, 100, 100] });
-    text('Qtd', L + 90, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
-    text('Unitário', L + 122, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
-    text('Total', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    if (hideValues) {
+      text('Qtd', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    } else {
+      text('Qtd', L + 90, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+      text('Unitário', L + 122, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+      text('Total', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    }
     nl(2.5); hline(); nl(3.5);
     order.orderParts.forEach((p: any) => {
-      const name = pdf.splitTextToSize(p.partName, 80)[0];
+      const name = pdf.splitTextToSize(p.partName, hideValues ? 150 : 80)[0];
       text(name, L, y, { size: 9 });
-      text(String(p.quantity), L + 90, y, { size: 9, align: 'right' });
-      text(fmt(p.unitPrice), L + 122, y, { size: 9, align: 'right' });
-      text(fmt(p.totalPrice), R, y, { size: 9, bold: true, align: 'right' });
+      if (hideValues) {
+        text(String(p.quantity), R, y, { size: 9, align: 'right' });
+      } else {
+        text(String(p.quantity), L + 90, y, { size: 9, align: 'right' });
+        text(fmt(p.unitPrice), L + 122, y, { size: 9, align: 'right' });
+        text(fmt(p.totalPrice), R, y, { size: 9, bold: true, align: 'right' });
+      }
       nl(5);
     });
   }
@@ -153,23 +164,31 @@ async function gerarPdf(order: any, summary: any) {
     nl(4);
     text('Data', L, y, { size: 7, bold: true, color: [100, 100, 100] });
     text('Descrição', L + 25, y, { size: 7, bold: true, color: [100, 100, 100] });
-    text('Horas', L + 105, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
-    text('Valor/h', L + 135, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
-    text('Total', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    if (hideValues) {
+      text('Horas', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    } else {
+      text('Horas', L + 105, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+      text('Valor/h', L + 135, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+      text('Total', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    }
     nl(2.5); hline(); nl(3.5);
     order.workHours.forEach((wh: any) => {
       text(fmtDate(wh.workedDate), L, y, { size: 8 });
-      const desc = pdf.splitTextToSize(wh.description || '—', 75)[0];
+      const desc = pdf.splitTextToSize(wh.description || '—', hideValues ? 120 : 75)[0];
       text(desc, L + 25, y, { size: 8, color: [120, 120, 120] });
-      text(`${wh.hours}h`, L + 105, y, { size: 8, align: 'right' });
-      text(fmt(wh.hourlyRate), L + 135, y, { size: 8, align: 'right' });
-      text(fmt(wh.totalCost), R, y, { size: 8, bold: true, align: 'right' });
+      if (hideValues) {
+        text(`${wh.hours}h`, R, y, { size: 8, align: 'right' });
+      } else {
+        text(`${wh.hours}h`, L + 105, y, { size: 8, align: 'right' });
+        text(fmt(wh.hourlyRate), L + 135, y, { size: 8, align: 'right' });
+        text(fmt(wh.totalCost), R, y, { size: 8, bold: true, align: 'right' });
+      }
       nl(5);
     });
   }
 
-  // ── Custos adicionais ──────────────────────────────────────────────────────
-  if (order.additionalCosts?.length > 0) {
+  // ── Custos adicionais (omitidos na via sem valores) ────────────────────────
+  if (!hideValues && order.additionalCosts?.length > 0) {
     sectionTitle('Custos Adicionais');
     nl(4);
     text('Descrição', L, y, { size: 7, bold: true, color: [100, 100, 100] });
@@ -182,42 +201,87 @@ async function gerarPdf(order: any, summary: any) {
     });
   }
 
-  // ── Resumo financeiro ──────────────────────────────────────────────────────
-  sectionTitle('Resumo Financeiro');
-  nl(4);
-  const sumRow = (label: string, value: number, bold = false, color?: [number, number, number]) => {
-    text(label, L, y, { size: bold ? 10 : 9, bold, color: color ?? (bold ? [0, 0, 0] : [100, 100, 100]) });
-    text(fmt(value), R, y, { size: bold ? 10 : 9, bold, align: 'right', color: color ?? [0, 0, 0] });
-    nl(bold ? 6 : 5);
-  };
-  if (summary.partsTotal > 0) sumRow('Peças', summary.partsTotal);
-  if (summary.hoursTotal > 0) sumRow('Mão de Obra', summary.hoursTotal);
-  if (summary.costsTotal > 0) sumRow('Custos Adicionais', summary.costsTotal);
-  hline(y, [0, 0, 0]); nl(4);
-  sumRow('Total Geral', summary.grandTotal, true);
-  if (summary.totalPaid > 0) sumRow('Pago', summary.totalPaid, false, [21, 128, 61]);
-  if (summary.remaining > 0) sumRow('Saldo Pendente', summary.remaining, true, [220, 38, 38]);
+  // ── Resumo financeiro (omitido na via sem valores) ─────────────────────────
+  if (!hideValues) {
+    sectionTitle('Resumo Financeiro');
+    nl(4);
+    const sumRow = (label: string, value: number, bold = false, color?: [number, number, number]) => {
+      text(label, L, y, { size: bold ? 10 : 9, bold, color: color ?? (bold ? [0, 0, 0] : [100, 100, 100]) });
+      text(fmt(value), R, y, { size: bold ? 10 : 9, bold, align: 'right', color: color ?? [0, 0, 0] });
+      nl(bold ? 6 : 5);
+    };
+    if (summary.partsTotal > 0) sumRow('Peças', summary.partsTotal);
+    if (summary.hoursTotal > 0) sumRow('Mão de Obra', summary.hoursTotal);
+    if (summary.costsTotal > 0) sumRow('Custos Adicionais', summary.costsTotal);
+    if (summary.travelTotal > 0) sumRow('Viagem', summary.travelTotal);
+    hline(y, [0, 0, 0]); nl(4);
+    sumRow('Total Geral', summary.grandTotal, true);
+    if (summary.totalPaid > 0) sumRow('Pago', summary.totalPaid, false, [21, 128, 61]);
+    if (summary.remaining > 0) sumRow('Saldo Pendente', summary.remaining, true, [220, 38, 38]);
 
-  // ── PIX fixo ───────────────────────────────────────────────────────────────
-  nl(3);
-  pdf.setFillColor(236, 253, 245);
-  pdf.setDrawColor(110, 231, 183);
-  pdf.roundedRect(L, y, R - L, 16, 3, 3, 'FD');
-  text('PIX PARA PAGAMENTO', L + 5, y + 5, { size: 7, bold: true, color: [6, 95, 70] });
-  text('Pix CNPJ 45782730000120', L + 5, y + 11, { size: 11, bold: true, color: [6, 78, 59] });
-  y += 16;
-  pdf.setDrawColor(0, 0, 0);
+    // ── PIX fixo ─────────────────────────────────────────────────────────────
+    nl(3);
+    pdf.setFillColor(236, 253, 245);
+    pdf.setDrawColor(110, 231, 183);
+    pdf.roundedRect(L, y, R - L, 16, 3, 3, 'FD');
+    text('PIX PARA PAGAMENTO', L + 5, y + 5, { size: 7, bold: true, color: [6, 95, 70] });
+    text('Pix CNPJ 45782730000120', L + 5, y + 11, { size: 11, bold: true, color: [6, 78, 59] });
+    y += 16;
+    pdf.setDrawColor(0, 0, 0);
+  }
+
+  // ── Assinaturas ────────────────────────────────────────────────────────────
+  {
+    // Fica perto do rodapé, mas nunca por cima do conteúdo se a OS for longa.
+    const signY = Math.max(y + 16, H - 34);
+    const colW = (R - L - 16) / 2;
+    const leftX1 = L, leftX2 = L + colW;
+    const rightX1 = R - colW, rightX2 = R;
+    const leftMid = (leftX1 + leftX2) / 2;
+    const rightMid = (rightX1 + rightX2) / 2;
+
+    // Assinaturas desenhadas (se houver) ficam logo acima da linha.
+    const sigImgH = 16;
+    const sigImgW = colW * 0.85;
+    const drawSig = (img: string | undefined | null, mid: number) => {
+      if (!img) return;
+      try {
+        pdf.addImage(img, 'PNG', mid - sigImgW / 2, signY - sigImgH - 1, sigImgW, sigImgH);
+      } catch {
+        /* imagem inválida — ignora e mantém só a linha */
+      }
+    };
+    drawSig(order.signatureTechnician, leftMid);
+    drawSig(order.signatureCustomer, rightMid);
+
+    pdf.setDrawColor(120, 120, 120);
+    line(leftX1, signY, leftX2, signY);
+    line(rightX1, signY, rightX2, signY);
+    pdf.setDrawColor(0, 0, 0);
+
+    const fit = (t: string) => pdf.splitTextToSize(t, colW)[0];
+
+    text(fit(order.technician?.name || 'Responsável'), leftMid, signY + 4, { size: 8, bold: true, align: 'center' });
+    text('Assinatura do Responsável', leftMid, signY + 8, { size: 7, color: [130, 130, 130], align: 'center' });
+
+    text(fit(order.customer.name), rightMid, signY + 4, { size: 8, bold: true, align: 'center' });
+    text('Assinatura do Cliente', rightMid, signY + 8, { size: 7, color: [130, 130, 130], align: 'center' });
+  }
 
   // ── Rodapé ─────────────────────────────────────────────────────────────────
   text('Página 1 de 1', W / 2, H - 5, { size: 7, color: [180, 180, 180], align: 'center' });
 
-  pdf.save(`OS-${order.orderNumber}.pdf`);
+  pdf.save(`OS-${order.orderNumber}${hideValues ? '-sem-valores' : ''}.pdf`);
 }
 
 export default function OsPdfPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const [status, setStatus] = useState<'loading' | 'generating' | 'done' | 'error'>('loading');
   const [errorMsg, setErrorMsg] = useState('');
+  const [hideValues] = useState(
+    () => typeof window !== 'undefined'
+      && new URLSearchParams(window.location.search).get('semValores') === '1',
+  );
 
   const { data: order } = useQuery<any>({
     queryKey: ['pdf-order', id],
@@ -234,7 +298,7 @@ export default function OsPdfPage({ params }: { params: Promise<{ id: string }> 
     if (!order || !summary) return;
     setStatus('generating');
     try {
-      await gerarPdf(order, summary);
+      await gerarPdf(order, summary, hideValues);
       setStatus('done');
     } catch (err: any) {
       console.error('Erro ao gerar PDF:', err);

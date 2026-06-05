@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, use } from 'react';
+import { useState, use, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useForm, type Resolver } from 'react-hook-form';
@@ -11,8 +11,9 @@ import { Button } from '@/components/ui/button';
 import {
   ArrowLeft, Plus, Trash2, X, Printer, ChevronRight,
   User, Wrench, Package, Clock, Receipt, CreditCard,
-  CalendarDays, FileText, DollarSign, AlertTriangle,
+  CalendarDays, FileText, DollarSign, AlertTriangle, PenLine, Car,
 } from 'lucide-react';
+import { SignaturePad, type SignaturePadHandle } from '@/components/signature-pad';
 
 // ─── Tipos ───────────────────────────────────────────────────────────────────
 
@@ -31,6 +32,13 @@ interface ServiceOrder {
   entryDate: string;
   exitDate?: string;
   estimatedDate?: string;
+  signatureTechnician?: string | null;
+  signatureCustomer?: string | null;
+  signedAt?: string | null;
+  travelKm: number;
+  travelHours: number;
+  travelKmRate: number;
+  travelHourRate: number;
   customer: { id: string; name: string; phone?: string; email?: string; address?: string };
   technician?: { id: string; name: string; pixKey?: string };
   orderParts: OrderPart[];
@@ -76,6 +84,7 @@ interface Summary {
   partsTotal: number;
   hoursTotal: number;
   costsTotal: number;
+  travelTotal: number;
   grandTotal: number;
   totalPaid: number;
   remaining: number;
@@ -84,9 +93,9 @@ interface Summary {
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
 const statusConfig: Record<OrderStatus, { label: string; color: string; dot: string; next?: OrderStatus; nextLabel?: string }> = {
-  OPEN:        { label: 'Aberta',       color: 'bg-blue-50 text-blue-700 border-blue-200',    dot: 'bg-blue-500',   next: 'IN_PROGRESS', nextLabel: 'Iniciar' },
-  IN_PROGRESS: { label: 'Em Andamento', color: 'bg-yellow-50 text-yellow-700 border-yellow-200', dot: 'bg-yellow-500', next: 'FINISHED',    nextLabel: 'Finalizar' },
-  FINISHED:    { label: 'Finalizada',   color: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500',  next: 'DELIVERED',   nextLabel: 'Entregar' },
+  OPEN:        { label: 'Aberta',       color: 'bg-blue-50 text-blue-700 border-blue-200',    dot: 'bg-blue-500',   next: 'FINISHED', nextLabel: 'Finalizar' },
+  IN_PROGRESS: { label: 'Em Andamento', color: 'bg-yellow-50 text-yellow-700 border-yellow-200', dot: 'bg-yellow-500', next: 'FINISHED', nextLabel: 'Finalizar' },
+  FINISHED:    { label: 'Finalizada',   color: 'bg-green-50 text-green-700 border-green-200', dot: 'bg-green-500' },
   DELIVERED:   { label: 'Entregue',     color: 'bg-gray-100 text-gray-600 border-gray-200',   dot: 'bg-gray-400' },
 };
 
@@ -180,13 +189,20 @@ const paymentSchema = z.object({
   notes:         z.string().optional(),
 });
 
+const travelSchema = z.object({
+  travelKm:       z.coerce.number().min(0),
+  travelHours:    z.coerce.number().min(0),
+  travelKmRate:   z.coerce.number().min(0),
+  travelHourRate: z.coerce.number().min(0),
+});
+
 // ─── Página ───────────────────────────────────────────────────────────────────
 
 export default function OrderDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const router  = useRouter();
   const qc      = useQueryClient();
-  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | null>(null);
+  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travel' | null>(null);
   const [showDelete, setShowDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -210,6 +226,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     qc.invalidateQueries({ queryKey: ['service-order', id] });
     qc.invalidateQueries({ queryKey: ['service-order-summary', id] });
     qc.invalidateQueries({ queryKey: ['service-orders'] });
+    qc.invalidateQueries({ queryKey: ['service-orders-stats'] });
   };
 
   const statusMutation      = useMutation({ mutationFn: (status: OrderStatus) => api.patch(`/service-orders/${id}/status`, { status }), onSuccess: invalidate });
@@ -220,7 +237,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const addCostMutation      = useMutation({ mutationFn: (data: z.infer<typeof costSchema>) => api.post(`/service-orders/${id}/additional-costs`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removeCostMutation   = useMutation({ mutationFn: (costId: string) => api.delete(`/service-orders/${id}/additional-costs/${costId}`), onSuccess: invalidate });
   const addPaymentMutation   = useMutation({ mutationFn: (data: z.infer<typeof paymentSchema>) => api.post(`/service-orders/${id}/payments`, data), onSuccess: () => { invalidate(); setModal(null); } });
+  const saveTravelMutation   = useMutation({ mutationFn: (data: z.infer<typeof travelSchema>) => api.patch(`/service-orders/${id}/travel`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removePaymentMutation = useMutation({ mutationFn: (paymentId: string) => api.delete(`/service-orders/${id}/payments/${paymentId}`), onSuccess: invalidate });
+  const saveSignaturesMutation = useMutation({
+    mutationFn: (data: { signatureTechnician: string | null; signatureCustomer: string | null }) =>
+      api.patch(`/service-orders/${id}/signatures`, data),
+    onSuccess: () => { invalidate(); setModal(null); },
+  });
   const deleteOrderMutation = useMutation({
     mutationFn: () => api.delete(`/service-orders/${id}`),
     onSuccess: () => {
@@ -297,10 +320,25 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               )}
               <Button
                 variant="outline"
+                onClick={() => setModal('signatures')}
+              >
+                <PenLine className="size-4" />
+                Assinar
+              </Button>
+              <Button
+                variant="outline"
                 onClick={() => window.open(`/ordens/${id}/pdf`, '_blank')}
               >
                 <Printer className="size-4" />
                 Baixar PDF
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => window.open(`/ordens/${id}/pdf?semValores=1`, '_blank')}
+                title="Gera uma via sem nenhum valor em R$, para entregar ao funcionário"
+              >
+                <Printer className="size-4" />
+                PDF sem valores
               </Button>
               <Button
                 variant="destructive"
@@ -563,6 +601,36 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         )}
       </SectionCard>
 
+      {/* ─── Custos de Viagem ─────────────────────────────────────────────────── */}
+      <SectionCard
+        title="Custos de Viagem"
+        icon={Car}
+        action={
+          <button onClick={() => setModal('travel')} className="flex items-center gap-1 text-xs text-primary hover:underline print:hidden">
+            <PenLine className="size-3" /> {order.travelKm > 0 || order.travelHours > 0 ? 'Editar' : 'Adicionar'}
+          </button>
+        }
+      >
+        {order.travelKm === 0 && order.travelHours === 0 ? (
+          <EmptyState icon={Car} text="Nenhum custo de viagem" />
+        ) : (
+          <div className="divide-y divide-border text-sm">
+            <div className="flex items-center justify-between py-2.5">
+              <span className="text-muted-foreground">
+                Distância — {order.travelKm} km × {fmt(order.travelKmRate)}/km
+              </span>
+              <span className="font-semibold">{fmt(order.travelKm * order.travelKmRate)}</span>
+            </div>
+            <div className="flex items-center justify-between py-2.5">
+              <span className="text-muted-foreground">
+                Tempo de viagem — {order.travelHours}h × {fmt(order.travelHourRate)}/h
+              </span>
+              <span className="font-semibold">{fmt(order.travelHours * order.travelHourRate)}</span>
+            </div>
+          </div>
+        )}
+      </SectionCard>
+
       {/* ─── Financeiro + Pagamentos ──────────────────────────────────────────── */}
       <div className="bg-card border border-border rounded-xl overflow-hidden">
 
@@ -590,6 +658,12 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Custos Adicionais</span>
                 <span>{fmt(summary.costsTotal)}</span>
+              </div>
+            )}
+            {summary.travelTotal > 0 && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Viagem</span>
+                <span>{fmt(summary.travelTotal)}</span>
               </div>
             )}
           </div>
@@ -650,7 +724,49 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
         )}
       </div>
 
+      {/* ─── Assinaturas ──────────────────────────────────────────────────────── */}
+      <SectionCard
+        title="Assinaturas"
+        icon={PenLine}
+        action={
+          <button onClick={() => setModal('signatures')} className="flex items-center gap-1 text-xs text-primary hover:underline print:hidden">
+            <PenLine className="size-3" /> {order.signatureTechnician || order.signatureCustomer ? 'Atualizar' : 'Assinar'}
+          </button>
+        }
+      >
+        <div className="grid grid-cols-2 gap-4">
+          {[
+            { label: order.technician?.name || 'Responsável', img: order.signatureTechnician },
+            { label: order.customer.name, img: order.signatureCustomer },
+          ].map((s, i) => (
+            <div key={i} className="text-center">
+              <div className="h-24 flex items-center justify-center border-b border-border">
+                {s.img ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={s.img} alt={`Assinatura de ${s.label}`} className="max-h-24 object-contain" />
+                ) : (
+                  <span className="text-xs text-muted-foreground italic">Sem assinatura</span>
+                )}
+              </div>
+              <p className="text-xs text-muted-foreground mt-1.5">{s.label}</p>
+              <p className="text-[10px] text-muted-foreground">{i === 0 ? 'Responsável' : 'Cliente'}</p>
+            </div>
+          ))}
+        </div>
+      </SectionCard>
+
       {/* ─── Modais ───────────────────────────────────────────────────────────── */}
+      {modal === 'signatures' && (
+        <SignaturesModal
+          technicianName={order.technician?.name || 'Responsável'}
+          customerName={order.customer.name}
+          initialTechnician={order.signatureTechnician}
+          initialCustomer={order.signatureCustomer}
+          onClose={() => setModal(null)}
+          onSubmit={(d) => saveSignaturesMutation.mutate(d)}
+          isLoading={saveSignaturesMutation.isPending}
+        />
+      )}
       {modal === 'part' && (
         <PartModal parts={catalogParts} onClose={() => setModal(null)} onSubmit={(d) => addPartMutation.mutate(d)} isLoading={addPartMutation.isPending} />
       )}
@@ -662,6 +778,19 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       )}
       {modal === 'payment' && (
         <PaymentModal defaultDate={today} grandTotal={summary?.grandTotal} onClose={() => setModal(null)} onSubmit={(d) => addPaymentMutation.mutate(d)} isLoading={addPaymentMutation.isPending} />
+      )}
+      {modal === 'travel' && (
+        <TravelModal
+          initial={{
+            travelKm: order.travelKm,
+            travelHours: order.travelHours,
+            travelKmRate: order.travelKmRate,
+            travelHourRate: order.travelHourRate,
+          }}
+          onClose={() => setModal(null)}
+          onSubmit={(d) => saveTravelMutation.mutate(d)}
+          isLoading={saveTravelMutation.isPending}
+        />
       )}
 
       {showDelete && (
@@ -772,7 +901,7 @@ function WorkHourModal({ defaultDate, onClose, onSubmit, isLoading }: {
 }) {
   const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof workHourSchema>>({
     resolver: zodResolver(workHourSchema) as Resolver<z.infer<typeof workHourSchema>>,
-    defaultValues: { workedDate: defaultDate, hourlyRate: 80 },
+    defaultValues: { workedDate: defaultDate, hourlyRate: 180 },
   });
   return (
     <Modal title="Registrar Horas" onClose={onClose}>
@@ -785,7 +914,10 @@ function WorkHourModal({ defaultDate, onClose, onSubmit, isLoading }: {
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">Valor/hora (R$) *</label>
-            <input type="number" step="0.01" min="0" className={inputClass} {...register('hourlyRate')} />
+            <select className={inputClass} {...register('hourlyRate')}>
+              <option value="180">R$ 180,00</option>
+              <option value="200">R$ 200,00</option>
+            </select>
           </div>
         </div>
         <div className="space-y-1">
@@ -828,6 +960,112 @@ function CostModal({ onClose, onSubmit, isLoading }: {
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
           <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Adicionar'}</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function SignaturesModal({
+  technicianName, customerName, initialTechnician, initialCustomer, onClose, onSubmit, isLoading,
+}: {
+  technicianName: string;
+  customerName: string;
+  initialTechnician?: string | null;
+  initialCustomer?: string | null;
+  onClose: () => void;
+  onSubmit: (d: { signatureTechnician: string | null; signatureCustomer: string | null }) => void;
+  isLoading: boolean;
+}) {
+  const techRef = useRef<SignaturePadHandle>(null);
+  const custRef = useRef<SignaturePadHandle>(null);
+
+  return (
+    <Modal title="Assinaturas" onClose={onClose}>
+      <div className="space-y-4">
+        <p className="text-xs text-muted-foreground">
+          Assine com o dedo (celular/tablet) ou com o mouse. As assinaturas ficam
+          salvas na OS e aparecem no PDF.
+        </p>
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium">
+            {technicianName} <span className="text-muted-foreground font-normal">· Responsável</span>
+          </label>
+          <SignaturePad ref={techRef} initial={initialTechnician} />
+        </div>
+        <div className="space-y-1.5">
+          <label className="text-sm font-medium">
+            {customerName} <span className="text-muted-foreground font-normal">· Cliente</span>
+          </label>
+          <SignaturePad ref={custRef} initial={initialCustomer} />
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button
+            onClick={() =>
+              onSubmit({
+                signatureTechnician: techRef.current?.toDataURL() ?? null,
+                signatureCustomer: custRef.current?.toDataURL() ?? null,
+              })
+            }
+            disabled={isLoading}
+          >
+            {isLoading ? 'Salvando...' : 'Salvar assinaturas'}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function TravelModal({ initial, onClose, onSubmit, isLoading }: {
+  initial: z.infer<typeof travelSchema>;
+  onClose: () => void;
+  onSubmit: (d: z.infer<typeof travelSchema>) => void;
+  isLoading: boolean;
+}) {
+  const { register, handleSubmit, watch } = useForm<z.infer<typeof travelSchema>>({
+    resolver: zodResolver(travelSchema) as Resolver<z.infer<typeof travelSchema>>,
+    defaultValues: initial,
+  });
+
+  const km   = Number(watch('travelKm'))       || 0;
+  const hrs  = Number(watch('travelHours'))     || 0;
+  const kmR  = Number(watch('travelKmRate'))    || 0;
+  const hrR  = Number(watch('travelHourRate'))  || 0;
+  const total = km * kmR + hrs * hrR;
+
+  return (
+    <Modal title="Custos de Viagem" onClose={onClose}>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+        <p className="text-xs text-muted-foreground">
+          Padrão: R$ 1,50 por km rodado e R$ 100,00 por hora de viagem.
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Km rodados</label>
+            <input type="number" step="0.1" min="0" className={inputClass} {...register('travelKm')} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">R$ por km</label>
+            <input type="number" step="0.01" min="0" className={inputClass} {...register('travelKmRate')} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Horas de viagem</label>
+            <input type="number" step="0.25" min="0" className={inputClass} {...register('travelHours')} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">R$ por hora</label>
+            <input type="number" step="0.01" min="0" className={inputClass} {...register('travelHourRate')} />
+          </div>
+        </div>
+        <div className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2.5 text-sm">
+          <span className="font-medium">Total de viagem</span>
+          <span className="font-bold">{fmt(total)}</span>
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Salvar'}</Button>
         </div>
       </form>
     </Modal>
