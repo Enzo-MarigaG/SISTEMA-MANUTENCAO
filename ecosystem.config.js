@@ -6,7 +6,7 @@ module.exports = {
     {
       name: 'manutencao-api',
       cwd: path.join(__dirname, 'backend'),
-      script: 'dist/src/main.js', // o build gera dist/src/ (por causa do prisma.config.ts na raiz)
+      script: 'dist/main.js', // tsconfig.build.json usa rootDir ./src e exclui prisma.config.ts → src/main.ts vira dist/main.js
       instances: 1,
       autorestart: true,
       max_memory_restart: '300M',

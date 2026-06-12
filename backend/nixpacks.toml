@@ -1,0 +1,14 @@
+# Nixpacks build config — backend NestJS (Dokploy → Build Path = /backend)
+providers = ["node"]
+
+[phases.install]
+cmds = ["npm ci"]
+
+[phases.build]
+cmds = ["npm run build"]
+
+# Start de produção: aplica migrations pendentes e sobe o servidor compilado.
+# O build gera dist/main.js (tsconfig.build.json usa rootDir ./src e exclui o
+# prisma.config.ts, então src/main.ts vira dist/main.js — igual ao script start:prod).
+[start]
+cmd = "npx prisma migrate deploy && node dist/main.js"
