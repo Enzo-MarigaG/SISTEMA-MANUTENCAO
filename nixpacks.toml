@@ -1,12 +1,10 @@
 # nixpacks.toml (raiz do monorepo)
 # Builda o backend NestJS mesmo com o Build Path do Dokploy em "/".
-# Assim não é preciso mexer no painel: o Nixpacks entra na pasta backend sozinho.
-
-[phases.setup]
-nixPkgs = ["nodejs_22"]
+# O provider de Node do Nixpacks (acionado pelo package.json da raiz) instala
+# o Node 22; aqui só sobrescrevemos install/build/start para rodar no backend.
 
 [phases.install]
-cmds = ["cd backend && npm ci"]
+cmds = ["cd backend && npm ci --include=dev"]
 
 [phases.build]
 cmds = ["cd backend && npm run build"]
