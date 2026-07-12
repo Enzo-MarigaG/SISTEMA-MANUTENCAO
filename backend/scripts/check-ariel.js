@@ -22,7 +22,13 @@ async function main() {
     if (DO_RESET) {
       const hashed = await bcrypt.hash(PASSWORD, 10);
       const created = await prisma.user.create({
-        data: { name: process.env.SEED_USER2_NAME || 'Ariel', email: EMAIL, password: hashed, role: 'ADMIN', pixKey: process.env.SEED_USER2_PIXKEY || null },
+        data: {
+          name: process.env.SEED_USER2_NAME || 'Ariel',
+          email: EMAIL,
+          password: hashed,
+          role: 'ADMIN',
+          pixKey: process.env.SEED_USER2_PIXKEY || null,
+        },
       });
       console.log(`✅ Usuário criado: ${created.email}`);
     }
@@ -30,15 +36,28 @@ async function main() {
   }
 
   console.log('Usuário encontrado:');
-  console.log({ id: user.id, name: user.name, email: user.email, role: user.role, active: user.active });
+  console.log({
+    id: user.id,
+    name: user.name,
+    email: user.email,
+    role: user.role,
+    active: user.active,
+  });
 
   const match = await bcrypt.compare(PASSWORD, user.password);
-  console.log(`Senha "${PASSWORD}" confere com o hash do banco? ${match ? '✅ SIM' : '❌ NÃO'}`);
-  console.log(`Conta ativa? ${user.active ? '✅ SIM' : '❌ NÃO (login é bloqueado)'}`);
+  console.log(
+    `Senha "${PASSWORD}" confere com o hash do banco? ${match ? '✅ SIM' : '❌ NÃO'}`,
+  );
+  console.log(
+    `Conta ativa? ${user.active ? '✅ SIM' : '❌ NÃO (login é bloqueado)'}`,
+  );
 
   if (DO_RESET) {
     const hashed = await bcrypt.hash(PASSWORD, 10);
-    await prisma.user.update({ where: { email: EMAIL }, data: { password: hashed, active: true } });
+    await prisma.user.update({
+      where: { email: EMAIL },
+      data: { password: hashed, active: true },
+    });
     console.log(`\n✅ Senha redefinida para "${PASSWORD}" e conta ativada.`);
   }
 }

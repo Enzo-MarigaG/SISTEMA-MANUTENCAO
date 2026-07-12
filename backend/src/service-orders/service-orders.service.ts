@@ -3,16 +3,19 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { OrderStatus, PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
+import { OrderStatus, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { CreateServiceOrderDto } from './dto/create-service-order.dto.js';
 import { UpdateServiceOrderDto } from './dto/update-service-order.dto.js';
 import { AddOrderPartDto } from './dto/add-order-part.dto.js';
+import { UpdateOrderPartDto } from './dto/update-order-part.dto.js';
 import { AddWorkHourDto } from './dto/add-work-hour.dto.js';
 import { AddAdditionalCostDto } from './dto/add-additional-cost.dto.js';
 import { AddPaymentDto } from './dto/add-payment.dto.js';
 import { SaveSignaturesDto } from './dto/save-signatures.dto.js';
 import { SaveTravelDto } from './dto/save-travel.dto.js';
+import { CreateTravelLegDto } from './dto/create-travel-leg.dto.js';
+import { UpdateTravelLegDto } from './dto/update-travel-leg.dto.js';
 
 /**
  * Converte uma string de data em Date.
@@ -71,9 +74,20 @@ export class ServiceOrdersService {
       ...(customerId && { customerId }),
       ...(search && {
         OR: [
-          { equipment: { contains: search, mode: Prisma.QueryMode.insensitive } },
-          { problemReported: { contains: search, mode: Prisma.QueryMode.insensitive } },
-          { customer: { name: { contains: search, mode: Prisma.QueryMode.insensitive } } },
+          {
+            equipment: { contains: search, mode: Prisma.QueryMode.insensitive },
+          },
+          {
+            problemReported: {
+              contains: search,
+              mode: Prisma.QueryMode.insensitive,
+            },
+          },
+          {
+            customer: {
+              name: { contains: search, mode: Prisma.QueryMode.insensitive },
+            },
+          },
         ],
       }),
     };
@@ -97,7 +111,9 @@ export class ServiceOrdersService {
       where: { id },
       include: {
         customer: true,
-        technician: { select: { id: true, name: true, email: true, pixKey: true } },
+        technician: {
+          select: { id: true, name: true, email: true, pixKey: true },
+        },
         orderParts: { include: { part: true }, orderBy: { createdAt: 'asc' } },
         workHours: {
           include: { technician: { select: { id: true, name: true } } },
@@ -106,6 +122,7 @@ export class ServiceOrdersService {
         additionalCosts: { orderBy: { createdAt: 'asc' } },
         payments: { orderBy: { createdAt: 'desc' } },
         attachments: { orderBy: { createdAt: 'desc' } },
+        travelLegs: { orderBy: [{ date: 'asc' }, { departureTime: 'asc' }] },
       },
     });
     if (!order) throw new NotFoundException('Ordem de serviço não encontrada');
@@ -116,7 +133,8 @@ export class ServiceOrdersService {
     await this.findOne(id);
     // FINISHED é o status de encerramento — registra a data/hora de saída.
     const isClosing =
-      dto.status === OrderStatus.FINISHED || dto.status === OrderStatus.DELIVERED;
+      dto.status === OrderStatus.FINISHED ||
+      dto.status === OrderStatus.DELIVERED;
     if (isClosing && !dto.exitDate) {
       dto.exitDate = new Date().toISOString();
     }
@@ -170,7 +188,9 @@ export class ServiceOrdersService {
     const totalPrice = dto.quantity * dto.unitPrice;
 
     if (dto.partId) {
-      const part = await this.prisma.part.findUnique({ where: { id: dto.partId } });
+      const part = await this.prisma.part.findUnique({
+        where: { id: dto.partId },
+      });
       if (!part) throw new NotFoundException('Peça não encontrada no catálogo');
       if (part.stockQty < dto.quantity) {
         throw new BadRequestException(
@@ -244,9 +264,79 @@ export class ServiceOrdersService {
     return this.prisma.orderPart.delete({ where: { id: orderPartId } });
   }
 
+  async updatePart(
+    serviceOrderId: string,
+    orderPartId: string,
+    dto: UpdateOrderPartDto,
+  ) {
+    const orderPart = await this.prisma.orderPart.findFirst({
+      where: { id: orderPartId, serviceOrderId },
+    });
+    if (!orderPart) throw new NotFoundException('Peça não encontrada na OS');
+
+    const totalPrice = dto.quantity * dto.unitPrice;
+
+    // Se a peça veio do catálogo, ajusta o estoque pela diferença de quantidade.
+    if (orderPart.partId) {
+      const delta = dto.quantity - orderPart.quantity; // >0 usa mais / <0 devolve
+
+      return this.prisma.$transaction(async (tx) => {
+        if (delta !== 0) {
+          if (delta > 0) {
+            const part = await tx.part.findUnique({
+              where: { id: orderPart.partId! },
+            });
+            if (part && part.stockQty < delta) {
+              throw new BadRequestException(
+                `Estoque insuficiente. Disponível: ${part.stockQty}`,
+              );
+            }
+          }
+          await tx.part.update({
+            where: { id: orderPart.partId! },
+            data: { stockQty: { decrement: delta } }, // decrement de nº negativo = soma
+          });
+          await tx.stockMovement.create({
+            data: {
+              partId: orderPart.partId!,
+              type: delta > 0 ? 'OUT' : 'IN',
+              quantity: Math.abs(delta),
+              reason: 'Ajuste por edição da OS',
+            },
+          });
+        }
+        return tx.orderPart.update({
+          where: { id: orderPartId },
+          data: {
+            partName: dto.partName,
+            quantity: dto.quantity,
+            unitPrice: dto.unitPrice,
+            totalPrice,
+          },
+          include: { part: true },
+        });
+      });
+    }
+
+    return this.prisma.orderPart.update({
+      where: { id: orderPartId },
+      data: {
+        partName: dto.partName,
+        quantity: dto.quantity,
+        unitPrice: dto.unitPrice,
+        totalPrice,
+      },
+      include: { part: true },
+    });
+  }
+
   // ─── Horas Trabalhadas ───────────────────────────────────
 
-  async addWorkHour(serviceOrderId: string, dto: AddWorkHourDto, userId: string) {
+  async addWorkHour(
+    serviceOrderId: string,
+    dto: AddWorkHourDto,
+    userId: string,
+  ) {
     await this.findOne(serviceOrderId);
     const totalCost = dto.hours * dto.hourlyRate;
 
@@ -271,12 +361,38 @@ export class ServiceOrdersService {
     return this.prisma.workHour.delete({ where: { id: workHourId } });
   }
 
+  async updateWorkHour(
+    serviceOrderId: string,
+    workHourId: string,
+    dto: AddWorkHourDto,
+  ) {
+    const wh = await this.prisma.workHour.findFirst({
+      where: { id: workHourId, serviceOrderId },
+    });
+    if (!wh) throw new NotFoundException('Registro de horas não encontrado');
+
+    return this.prisma.workHour.update({
+      where: { id: workHourId },
+      data: {
+        hours: dto.hours,
+        hourlyRate: dto.hourlyRate,
+        totalCost: dto.hours * dto.hourlyRate,
+        workedDate: toDate(dto.workedDate)!,
+        description: dto.description,
+      },
+    });
+  }
+
   // ─── Custos Adicionais ───────────────────────────────────
 
   async addAdditionalCost(serviceOrderId: string, dto: AddAdditionalCostDto) {
     await this.findOne(serviceOrderId);
     return this.prisma.additionalCost.create({
-      data: { serviceOrderId, description: dto.description, amount: dto.amount },
+      data: {
+        serviceOrderId,
+        description: dto.description,
+        amount: dto.amount,
+      },
     });
   }
 
@@ -286,6 +402,22 @@ export class ServiceOrdersService {
     });
     if (!cost) throw new NotFoundException('Custo não encontrado');
     return this.prisma.additionalCost.delete({ where: { id: costId } });
+  }
+
+  async updateAdditionalCost(
+    serviceOrderId: string,
+    costId: string,
+    dto: AddAdditionalCostDto,
+  ) {
+    const cost = await this.prisma.additionalCost.findFirst({
+      where: { id: costId, serviceOrderId },
+    });
+    if (!cost) throw new NotFoundException('Custo não encontrado');
+
+    return this.prisma.additionalCost.update({
+      where: { id: costId },
+      data: { description: dto.description, amount: dto.amount },
+    });
   }
 
   // ─── Pagamentos ──────────────────────────────────────────
@@ -352,24 +484,103 @@ export class ServiceOrdersService {
 
   // ─── Custos de Viagem ────────────────────────────────────
 
+  /** Ajusta apenas as taxas (R$/km e R$/hora). Os totais vêm dos trechos. */
   async saveTravel(id: string, dto: SaveTravelDto) {
     await this.findOne(id);
     const data: Prisma.ServiceOrderUpdateInput = {};
-    if (dto.travelKm !== undefined) data.travelKm = dto.travelKm;
-    if (dto.travelHours !== undefined) data.travelHours = dto.travelHours;
     if (dto.travelKmRate !== undefined) data.travelKmRate = dto.travelKmRate;
-    if (dto.travelHourRate !== undefined) data.travelHourRate = dto.travelHourRate;
+    if (dto.travelHourRate !== undefined)
+      data.travelHourRate = dto.travelHourRate;
 
     return this.prisma.serviceOrder.update({
       where: { id },
       data,
       select: {
         id: true,
-        travelKm: true,
-        travelHours: true,
         travelKmRate: true,
         travelHourRate: true,
       },
+    });
+  }
+
+  /** Duração de um trecho, em horas, a partir de "HH:mm" (trata virada de dia). */
+  private legDurationHours(departureTime: string, arrivalTime: string): number {
+    const [dh, dm] = departureTime.split(':').map(Number);
+    const [ah, am] = arrivalTime.split(':').map(Number);
+    let mins = ah * 60 + am - (dh * 60 + dm);
+    if (mins < 0) mins += 24 * 60; // chegou no dia seguinte
+    return mins / 60;
+  }
+
+  /** Recalcula travelKm/travelHours da OS a partir dos trechos. */
+  private async recomputeTravelTotals(
+    tx: Prisma.TransactionClient,
+    serviceOrderId: string,
+  ) {
+    const legs = await tx.travelLeg.findMany({ where: { serviceOrderId } });
+    const travelKm = legs.reduce((s, l) => s + l.km, 0);
+    const travelHours = legs.reduce(
+      (s, l) => s + this.legDurationHours(l.departureTime, l.arrivalTime),
+      0,
+    );
+    await tx.serviceOrder.update({
+      where: { id: serviceOrderId },
+      data: { travelKm, travelHours },
+    });
+  }
+
+  async addTravelLeg(id: string, dto: CreateTravelLegDto) {
+    await this.findOne(id);
+    return this.prisma.$transaction(async (tx) => {
+      const leg = await tx.travelLeg.create({
+        data: {
+          serviceOrderId: id,
+          date: toDate(dto.date)!,
+          departureTime: dto.departureTime,
+          arrivalTime: dto.arrivalTime,
+          km: dto.km,
+          description: dto.description,
+        },
+      });
+      await this.recomputeTravelTotals(tx, id);
+      return leg;
+    });
+  }
+
+  async updateTravelLeg(id: string, legId: string, dto: UpdateTravelLegDto) {
+    await this.findOne(id);
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.travelLeg.findFirst({
+        where: { id: legId, serviceOrderId: id },
+      });
+      if (!existing)
+        throw new NotFoundException('Trecho de viagem não encontrado');
+      const leg = await tx.travelLeg.update({
+        where: { id: legId },
+        data: {
+          date: toDate(dto.date),
+          departureTime: dto.departureTime,
+          arrivalTime: dto.arrivalTime,
+          km: dto.km,
+          description: dto.description ?? null,
+        },
+      });
+      await this.recomputeTravelTotals(tx, id);
+      return leg;
+    });
+  }
+
+  async removeTravelLeg(id: string, legId: string) {
+    await this.findOne(id);
+    return this.prisma.$transaction(async (tx) => {
+      const existing = await tx.travelLeg.findFirst({
+        where: { id: legId, serviceOrderId: id },
+      });
+      if (!existing)
+        throw new NotFoundException('Trecho de viagem não encontrado');
+      await tx.travelLeg.delete({ where: { id: legId } });
+      await this.recomputeTravelTotals(tx, id);
+      return { success: true };
     });
   }
 
@@ -523,13 +734,17 @@ export class ServiceOrdersService {
         _sum: { amountPaid: true },
         where: { paymentStatus: { in: ['PENDING', 'PARTIAL'] } },
       }),
-      this.prisma.serviceOrder.count({ where: { entryDate: { gte: startOfMonth } } }),
+      this.prisma.serviceOrder.count({
+        where: { entryDate: { gte: startOfMonth } },
+      }),
       this.prisma.part.findMany({ select: { stockQty: true, minStock: true } }),
     ]);
 
     const revenueChange =
       revenuePrevMonth > 0
-        ? Math.round(((revenueMonth - revenuePrevMonth) / revenuePrevMonth) * 100)
+        ? Math.round(
+            ((revenueMonth - revenuePrevMonth) / revenuePrevMonth) * 100,
+          )
         : null;
 
     const lowStockParts = parts.filter((p) => p.stockQty <= p.minStock).length;

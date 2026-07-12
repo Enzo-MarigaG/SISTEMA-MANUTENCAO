@@ -187,6 +187,34 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
     });
   }
 
+  // ── Deslocamento / Viagem ──────────────────────────────────────────────────
+  if (order.travelLegs?.length > 0) {
+    const legDur = (dep: string, arr: string) => {
+      const [dh, dm] = dep.split(':').map(Number);
+      const [ah, am] = arr.split(':').map(Number);
+      let mins = ah * 60 + am - (dh * 60 + dm);
+      if (mins < 0) mins += 24 * 60;
+      const h = Math.floor(mins / 60);
+      const m = mins % 60;
+      return `${h}h${m ? String(m).padStart(2, '0') : ''}`;
+    };
+    sectionTitle('Deslocamento / Viagem');
+    nl(4);
+    text('Data', L, y, { size: 7, bold: true, color: [100, 100, 100] });
+    text('Descrição', L + 25, y, { size: 7, bold: true, color: [100, 100, 100] });
+    text('Saída → Chegada', L + 105, y, { size: 7, bold: true, color: [100, 100, 100] });
+    text('Km', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+    nl(2.5); hline(); nl(3.5);
+    order.travelLegs.forEach((leg: any) => {
+      text(fmtDate(leg.date), L, y, { size: 8 });
+      const desc = pdf.splitTextToSize(leg.description || '—', 75)[0];
+      text(desc, L + 25, y, { size: 8, color: [120, 120, 120] });
+      text(`${leg.departureTime} → ${leg.arrivalTime}  (${legDur(leg.departureTime, leg.arrivalTime)})`, L + 105, y, { size: 8 });
+      text(`${leg.km} km`, R, y, { size: 8, bold: true, align: 'right' });
+      nl(5);
+    });
+  }
+
   // ── Custos adicionais (omitidos na via sem valores) ────────────────────────
   if (!hideValues && order.additionalCosts?.length > 0) {
     sectionTitle('Custos Adicionais');
@@ -217,17 +245,6 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
     hline(y, [0, 0, 0]); nl(4);
     sumRow('Total Geral', summary.grandTotal, true);
     if (summary.totalPaid > 0) sumRow('Pago', summary.totalPaid, false, [21, 128, 61]);
-    if (summary.remaining > 0) sumRow('Saldo Pendente', summary.remaining, true, [220, 38, 38]);
-
-    // ── PIX fixo ─────────────────────────────────────────────────────────────
-    nl(3);
-    pdf.setFillColor(236, 253, 245);
-    pdf.setDrawColor(110, 231, 183);
-    pdf.roundedRect(L, y, R - L, 16, 3, 3, 'FD');
-    text('PIX PARA PAGAMENTO', L + 5, y + 5, { size: 7, bold: true, color: [6, 95, 70] });
-    text('Pix CNPJ 45782730000120', L + 5, y + 11, { size: 11, bold: true, color: [6, 78, 59] });
-    y += 16;
-    pdf.setDrawColor(0, 0, 0);
   }
 
   // ── Assinaturas ────────────────────────────────────────────────────────────

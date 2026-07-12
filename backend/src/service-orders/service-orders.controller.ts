@@ -17,11 +17,14 @@ import { ServiceOrdersService } from './service-orders.service.js';
 import { CreateServiceOrderDto } from './dto/create-service-order.dto.js';
 import { UpdateServiceOrderDto } from './dto/update-service-order.dto.js';
 import { AddOrderPartDto } from './dto/add-order-part.dto.js';
+import { UpdateOrderPartDto } from './dto/update-order-part.dto.js';
 import { AddWorkHourDto } from './dto/add-work-hour.dto.js';
 import { AddAdditionalCostDto } from './dto/add-additional-cost.dto.js';
 import { AddPaymentDto } from './dto/add-payment.dto.js';
 import { SaveSignaturesDto } from './dto/save-signatures.dto.js';
 import { SaveTravelDto } from './dto/save-travel.dto.js';
+import { CreateTravelLegDto } from './dto/create-travel-leg.dto.js';
+import { UpdateTravelLegDto } from './dto/update-travel-leg.dto.js';
 
 @UseGuards(JwtAuthGuard)
 @Controller('service-orders')
@@ -86,10 +89,7 @@ export class ServiceOrdersController {
   }
 
   @Patch(':id/status')
-  updateStatus(
-    @Param('id') id: string,
-    @Body('status') status: OrderStatus,
-  ) {
+  updateStatus(@Param('id') id: string, @Body('status') status: OrderStatus) {
     return this.serviceOrdersService.updateStatus(id, status);
   }
 
@@ -112,6 +112,25 @@ export class ServiceOrdersController {
     return this.serviceOrdersService.saveTravel(id, dto);
   }
 
+  @Post(':id/travel-legs')
+  addTravelLeg(@Param('id') id: string, @Body() dto: CreateTravelLegDto) {
+    return this.serviceOrdersService.addTravelLeg(id, dto);
+  }
+
+  @Patch(':id/travel-legs/:legId')
+  updateTravelLeg(
+    @Param('id') id: string,
+    @Param('legId') legId: string,
+    @Body() dto: UpdateTravelLegDto,
+  ) {
+    return this.serviceOrdersService.updateTravelLeg(id, legId, dto);
+  }
+
+  @Delete(':id/travel-legs/:legId')
+  removeTravelLeg(@Param('id') id: string, @Param('legId') legId: string) {
+    return this.serviceOrdersService.removeTravelLeg(id, legId);
+  }
+
   // ─── Resumo financeiro ───────────────────────────────────
 
   @Get(':id/summary')
@@ -124,6 +143,15 @@ export class ServiceOrdersController {
   @Post(':id/parts')
   addPart(@Param('id') id: string, @Body() dto: AddOrderPartDto) {
     return this.serviceOrdersService.addPart(id, dto);
+  }
+
+  @Patch(':id/parts/:orderPartId')
+  updatePart(
+    @Param('id') id: string,
+    @Param('orderPartId') orderPartId: string,
+    @Body() dto: UpdateOrderPartDto,
+  ) {
+    return this.serviceOrdersService.updatePart(id, orderPartId, dto);
   }
 
   @Delete(':id/parts/:orderPartId')
@@ -145,6 +173,15 @@ export class ServiceOrdersController {
     return this.serviceOrdersService.addWorkHour(id, dto, user.id);
   }
 
+  @Patch(':id/work-hours/:workHourId')
+  updateWorkHour(
+    @Param('id') id: string,
+    @Param('workHourId') workHourId: string,
+    @Body() dto: AddWorkHourDto,
+  ) {
+    return this.serviceOrdersService.updateWorkHour(id, workHourId, dto);
+  }
+
   @Delete(':id/work-hours/:workHourId')
   removeWorkHour(
     @Param('id') id: string,
@@ -161,6 +198,15 @@ export class ServiceOrdersController {
     @Body() dto: AddAdditionalCostDto,
   ) {
     return this.serviceOrdersService.addAdditionalCost(id, dto);
+  }
+
+  @Patch(':id/additional-costs/:costId')
+  updateAdditionalCost(
+    @Param('id') id: string,
+    @Param('costId') costId: string,
+    @Body() dto: AddAdditionalCostDto,
+  ) {
+    return this.serviceOrdersService.updateAdditionalCost(id, costId, dto);
   }
 
   @Delete(':id/additional-costs/:costId')

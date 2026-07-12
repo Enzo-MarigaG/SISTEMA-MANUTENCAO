@@ -65,9 +65,11 @@ model ServiceOrder {
   signatureTechnician String?  // PNG (data URL) — assinatura do responsável
   signatureCustomer   String?  // PNG (data URL) — assinatura do cliente
   signedAt            DateTime?
-  // Custos de viagem/deslocamento
-  travelKm        Float       @default(0)    // km rodados
-  travelHours     Float       @default(0)    // horas rodadas
+  // Custos de viagem/deslocamento.
+  // travelKm/travelHours são totais DERIVADOS dos trechos (TravelLeg) e são
+  // recalculados a cada trecho adicionado/editado/removido. As taxas ficam aqui.
+  travelKm        Float       @default(0)    // km rodados (soma dos trechos)
+  travelHours     Float       @default(0)    // horas rodadas (soma das durações)
   travelKmRate    Float       @default(1.5)  // R$ por km
   travelHourRate  Float       @default(100)  // R$ por hora
   createdAt       DateTime    @default(now())
@@ -78,6 +80,22 @@ model ServiceOrder {
   additionalCosts AdditionalCost[]
   payments        Payment[]
   attachments     Attachment[]
+  travelLegs      TravelLeg[]
+}
+
+// ─── TRECHOS DE VIAGEM ───────────────────────────────
+// Cada trecho é um deslocamento com dia, hora de saída, hora de chegada e km.
+// Ex.: "Ida — Cidade X" saiu 07:00, chegou 09:00, 120 km.
+model TravelLeg {
+  id             String       @id @default(uuid())
+  serviceOrder   ServiceOrder @relation(fields: [serviceOrderId], references: [id], onDelete: Cascade)
+  serviceOrderId String
+  date           DateTime     // dia da viagem
+  departureTime  String       // hora de saída "HH:mm"
+  arrivalTime    String       // hora de chegada "HH:mm"
+  km             Float
+  description    String?      // ex: "Ida — Cidade X"
+  createdAt      DateTime     @default(now())
 }
 
 enum OrderStatus {

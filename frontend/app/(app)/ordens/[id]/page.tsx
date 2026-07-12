@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import {
   ArrowLeft, Plus, Trash2, X, Printer, ChevronRight,
   User, Wrench, Package, Clock, Receipt, CreditCard,
-  CalendarDays, FileText, DollarSign, AlertTriangle, PenLine, Car,
+  CalendarDays, FileText, DollarSign, AlertTriangle, PenLine, Car, Pencil,
 } from 'lucide-react';
 import { SignaturePad, type SignaturePadHandle } from '@/components/signature-pad';
 
@@ -45,6 +45,16 @@ interface ServiceOrder {
   workHours: WorkHour[];
   additionalCosts: AdditionalCost[];
   payments: Payment[];
+  travelLegs: TravelLeg[];
+}
+
+interface TravelLeg {
+  id: string;
+  date: string;
+  departureTime: string;
+  arrivalTime: string;
+  km: number;
+  description?: string;
 }
 
 interface OrderPart {
@@ -112,6 +122,23 @@ const paymentStatusLabel: Record<PaymentStatus, { label: string; color: string }
 
 const fmt     = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtDate = (d: string) => new Date(d).toLocaleDateString('pt-BR');
+
+// Formata horas decimais como "2h" ou "2h30"
+const fmtHoursNum = (hours: number) => {
+  const total = Math.round(hours * 60);
+  const h = Math.floor(total / 60);
+  const m = total % 60;
+  return `${h}h${m ? String(m).padStart(2, '0') : ''}`;
+};
+
+// Duração de um trecho "HH:mm" → "HH:mm" (trata virada de dia), como texto "2h30"
+const legDuration = (departure: string, arrival: string) => {
+  const [dh, dm] = departure.split(':').map(Number);
+  const [ah, am] = arrival.split(':').map(Number);
+  let mins = ah * 60 + am - (dh * 60 + dm);
+  if (mins < 0) mins += 24 * 60;
+  return fmtHoursNum(mins / 60);
+};
 
 // ─── Componentes auxiliares ───────────────────────────────────────────────────
 
@@ -189,11 +216,18 @@ const paymentSchema = z.object({
   notes:         z.string().optional(),
 });
 
-const travelSchema = z.object({
-  travelKm:       z.coerce.number().min(0),
-  travelHours:    z.coerce.number().min(0),
+const travelRatesSchema = z.object({
   travelKmRate:   z.coerce.number().min(0),
   travelHourRate: z.coerce.number().min(0),
+});
+
+const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+const travelLegSchema = z.object({
+  date:          z.string().min(1, 'Data é obrigatória'),
+  description:   z.string().optional(),
+  departureTime: z.string().regex(timeRegex, 'Use HH:mm'),
+  arrivalTime:   z.string().regex(timeRegex, 'Use HH:mm'),
+  km:            z.coerce.number().min(0),
 });
 
 // ─── Página ───────────────────────────────────────────────────────────────────
@@ -202,7 +236,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const { id } = use(params);
   const router  = useRouter();
   const qc      = useQueryClient();
-  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travel' | null>(null);
+  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travelLeg' | 'travelRates' | null>(null);
+  const [editingPart, setEditingPart] = useState<OrderPart | null>(null);
+  const [editingWorkHour, setEditingWorkHour] = useState<WorkHour | null>(null);
+  const [editingCost, setEditingCost] = useState<AdditionalCost | null>(null);
+  const [editingTravelLeg, setEditingTravelLeg] = useState<TravelLeg | null>(null);
   const [showDelete, setShowDelete] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -232,12 +270,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const statusMutation      = useMutation({ mutationFn: (status: OrderStatus) => api.patch(`/service-orders/${id}/status`, { status }), onSuccess: invalidate });
   const addPartMutation      = useMutation({ mutationFn: (data: z.infer<typeof partSchema>) => api.post(`/service-orders/${id}/parts`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removePartMutation   = useMutation({ mutationFn: (orderPartId: string) => api.delete(`/service-orders/${id}/parts/${orderPartId}`), onSuccess: invalidate });
+  const updatePartMutation   = useMutation({ mutationFn: ({ orderPartId, data }: { orderPartId: string; data: z.infer<typeof partSchema> }) => api.patch(`/service-orders/${id}/parts/${orderPartId}`, data), onSuccess: () => { invalidate(); setEditingPart(null); } });
   const addWorkHourMutation  = useMutation({ mutationFn: (data: z.infer<typeof workHourSchema>) => api.post(`/service-orders/${id}/work-hours`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removeWorkHourMutation = useMutation({ mutationFn: (whId: string) => api.delete(`/service-orders/${id}/work-hours/${whId}`), onSuccess: invalidate });
+  const updateWorkHourMutation = useMutation({ mutationFn: ({ whId, data }: { whId: string; data: z.infer<typeof workHourSchema> }) => api.patch(`/service-orders/${id}/work-hours/${whId}`, data), onSuccess: () => { invalidate(); setEditingWorkHour(null); } });
   const addCostMutation      = useMutation({ mutationFn: (data: z.infer<typeof costSchema>) => api.post(`/service-orders/${id}/additional-costs`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removeCostMutation   = useMutation({ mutationFn: (costId: string) => api.delete(`/service-orders/${id}/additional-costs/${costId}`), onSuccess: invalidate });
+  const updateCostMutation   = useMutation({ mutationFn: ({ costId, data }: { costId: string; data: z.infer<typeof costSchema> }) => api.patch(`/service-orders/${id}/additional-costs/${costId}`, data), onSuccess: () => { invalidate(); setEditingCost(null); } });
   const addPaymentMutation   = useMutation({ mutationFn: (data: z.infer<typeof paymentSchema>) => api.post(`/service-orders/${id}/payments`, data), onSuccess: () => { invalidate(); setModal(null); } });
-  const saveTravelMutation   = useMutation({ mutationFn: (data: z.infer<typeof travelSchema>) => api.patch(`/service-orders/${id}/travel`, data), onSuccess: () => { invalidate(); setModal(null); } });
+  const saveTravelMutation   = useMutation({ mutationFn: (data: z.infer<typeof travelRatesSchema>) => api.patch(`/service-orders/${id}/travel`, data), onSuccess: () => { invalidate(); setModal(null); } });
+  const addTravelLegMutation    = useMutation({ mutationFn: (data: z.infer<typeof travelLegSchema>) => api.post(`/service-orders/${id}/travel-legs`, data), onSuccess: () => { invalidate(); setModal(null); } });
+  const updateTravelLegMutation = useMutation({ mutationFn: ({ legId, data }: { legId: string; data: z.infer<typeof travelLegSchema> }) => api.patch(`/service-orders/${id}/travel-legs/${legId}`, data), onSuccess: () => { invalidate(); setEditingTravelLeg(null); } });
+  const removeTravelLegMutation = useMutation({ mutationFn: (legId: string) => api.delete(`/service-orders/${id}/travel-legs/${legId}`), onSuccess: invalidate });
   const removePaymentMutation = useMutation({ mutationFn: (paymentId: string) => api.delete(`/service-orders/${id}/payments/${paymentId}`), onSuccess: invalidate });
   const saveSignaturesMutation = useMutation({
     mutationFn: (data: { signatureTechnician: string | null; signatureCustomer: string | null }) =>
@@ -473,9 +517,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       {p.quantity}× {fmt(p.unitPrice)} = <span className="font-semibold text-foreground">{fmt(p.totalPrice)}</span>
                     </p>
                   </div>
-                  <button onClick={() => removePartMutation.mutate(p.id)} className="p-1.5 hover:text-destructive transition-colors text-muted-foreground print:hidden shrink-0">
-                    <Trash2 className="size-4" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0 print:hidden">
+                    <button onClick={() => setEditingPart(p)} className="p-1.5 hover:text-primary transition-colors text-muted-foreground">
+                      <Pencil className="size-4" />
+                    </button>
+                    <button onClick={() => removePartMutation.mutate(p.id)} className="p-1.5 hover:text-destructive transition-colors text-muted-foreground">
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -497,9 +546,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <td className="py-2.5 text-right text-muted-foreground">{fmt(p.unitPrice)}</td>
                     <td className="py-2.5 text-right font-semibold">{fmt(p.totalPrice)}</td>
                     <td className="py-2.5 print:hidden">
-                      <button onClick={() => removePartMutation.mutate(p.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground">
-                        <Trash2 className="size-3.5" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setEditingPart(p)} className="p-1 hover:text-primary transition-colors text-muted-foreground">
+                          <Pencil className="size-3.5" />
+                        </button>
+                        <button onClick={() => removePartMutation.mutate(p.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground">
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -533,9 +587,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                       {wh.hours}h × {fmt(wh.hourlyRate)} = <span className="font-semibold text-foreground">{fmt(wh.totalCost)}</span>
                     </p>
                   </div>
-                  <button onClick={() => removeWorkHourMutation.mutate(wh.id)} className="p-1.5 hover:text-destructive transition-colors text-muted-foreground print:hidden shrink-0">
-                    <Trash2 className="size-4" />
-                  </button>
+                  <div className="flex items-center gap-1 shrink-0 print:hidden">
+                    <button onClick={() => setEditingWorkHour(wh)} className="p-1.5 hover:text-primary transition-colors text-muted-foreground">
+                      <Pencil className="size-4" />
+                    </button>
+                    <button onClick={() => removeWorkHourMutation.mutate(wh.id)} className="p-1.5 hover:text-destructive transition-colors text-muted-foreground">
+                      <Trash2 className="size-4" />
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -559,9 +618,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     <td className="py-2.5 text-right text-muted-foreground">{fmt(wh.hourlyRate)}</td>
                     <td className="py-2.5 text-right font-semibold">{fmt(wh.totalCost)}</td>
                     <td className="py-2.5 print:hidden">
-                      <button onClick={() => removeWorkHourMutation.mutate(wh.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground">
-                        <Trash2 className="size-3.5" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        <button onClick={() => setEditingWorkHour(wh)} className="p-1 hover:text-primary transition-colors text-muted-foreground">
+                          <Pencil className="size-3.5" />
+                        </button>
+                        <button onClick={() => removeWorkHourMutation.mutate(wh.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground">
+                          <Trash2 className="size-3.5" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -591,9 +655,14 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                 <span className="truncate mr-3">{c.description}</span>
                 <div className="flex items-center gap-2 shrink-0">
                   <span className="font-semibold">{fmt(c.amount)}</span>
-                  <button onClick={() => removeCostMutation.mutate(c.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground print:hidden">
-                    <Trash2 className="size-3.5" />
-                  </button>
+                  <div className="flex items-center gap-1 print:hidden">
+                    <button onClick={() => setEditingCost(c)} className="p-1 hover:text-primary transition-colors text-muted-foreground">
+                      <Pencil className="size-3.5" />
+                    </button>
+                    <button onClick={() => removeCostMutation.mutate(c.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground">
+                      <Trash2 className="size-3.5" />
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}
@@ -603,31 +672,99 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
       {/* ─── Custos de Viagem ─────────────────────────────────────────────────── */}
       <SectionCard
-        title="Custos de Viagem"
+        title={`Custos de Viagem${order.travelLegs.length > 0 ? ` (${order.travelLegs.length})` : ''}`}
         icon={Car}
         action={
-          <button onClick={() => setModal('travel')} className="flex items-center gap-1 text-xs text-primary hover:underline print:hidden">
-            <PenLine className="size-3" /> {order.travelKm > 0 || order.travelHours > 0 ? 'Editar' : 'Adicionar'}
-          </button>
+          <div className="flex items-center gap-3 print:hidden">
+            <button onClick={() => setModal('travelRates')} className="flex items-center gap-1 text-xs text-muted-foreground hover:text-primary hover:underline">
+              <PenLine className="size-3" /> Taxas
+            </button>
+            <button onClick={() => setModal('travelLeg')} className="flex items-center gap-1 text-xs text-primary hover:underline">
+              <Plus className="size-3" /> Adicionar trecho
+            </button>
+          </div>
         }
       >
-        {order.travelKm === 0 && order.travelHours === 0 ? (
-          <EmptyState icon={Car} text="Nenhum custo de viagem" />
+        {order.travelLegs.length === 0 && order.travelKm === 0 && order.travelHours === 0 ? (
+          <EmptyState icon={Car} text="Nenhum trecho de viagem" />
         ) : (
-          <div className="divide-y divide-border text-sm">
-            <div className="flex items-center justify-between py-2.5">
-              <span className="text-muted-foreground">
-                Distância — {order.travelKm} km × {fmt(order.travelKmRate)}/km
-              </span>
-              <span className="font-semibold">{fmt(order.travelKm * order.travelKmRate)}</span>
+          <>
+            {order.travelLegs.length > 0 && (
+              <>
+                {/* Mobile: cards */}
+                <div className="sm:hidden space-y-2">
+                  {order.travelLegs.map(leg => (
+                    <div key={leg.id} className="flex items-start justify-between gap-2 py-2.5 border-b border-border last:border-0">
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">{fmtDate(leg.date)}{leg.description ? ` — ${leg.description}` : ''}</p>
+                        <p className="text-xs text-muted-foreground mt-0.5">
+                          {leg.departureTime} → {leg.arrivalTime} · {legDuration(leg.departureTime, leg.arrivalTime)} · <span className="font-semibold text-foreground">{leg.km} km</span>
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0 print:hidden">
+                        <button onClick={() => setEditingTravelLeg(leg)} className="p-1.5 hover:text-primary transition-colors text-muted-foreground">
+                          <Pencil className="size-4" />
+                        </button>
+                        <button onClick={() => removeTravelLegMutation.mutate(leg.id)} className="p-1.5 hover:text-destructive transition-colors text-muted-foreground">
+                          <Trash2 className="size-4" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                {/* Desktop: tabela */}
+                <table className="hidden sm:table w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-border text-left">
+                      <th className="pb-2.5 font-medium text-muted-foreground">Data</th>
+                      <th className="pb-2.5 font-medium text-muted-foreground">Descrição</th>
+                      <th className="pb-2.5 font-medium text-muted-foreground text-center">Saída → Chegada</th>
+                      <th className="pb-2.5 font-medium text-muted-foreground text-center">Duração</th>
+                      <th className="pb-2.5 font-medium text-muted-foreground text-right">Km</th>
+                      <th className="pb-2.5 w-8 print:hidden" />
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-border">
+                    {order.travelLegs.map(leg => (
+                      <tr key={leg.id} className="hover:bg-muted/20 transition-colors">
+                        <td className="py-2.5">{fmtDate(leg.date)}</td>
+                        <td className="py-2.5 text-muted-foreground">{leg.description || '—'}</td>
+                        <td className="py-2.5 text-center">{leg.departureTime} → {leg.arrivalTime}</td>
+                        <td className="py-2.5 text-center text-muted-foreground">{legDuration(leg.departureTime, leg.arrivalTime)}</td>
+                        <td className="py-2.5 text-right font-semibold">{leg.km} km</td>
+                        <td className="py-2.5 print:hidden">
+                          <div className="flex items-center justify-end gap-1">
+                            <button onClick={() => setEditingTravelLeg(leg)} className="p-1 hover:text-primary transition-colors text-muted-foreground">
+                              <Pencil className="size-3.5" />
+                            </button>
+                            <button onClick={() => removeTravelLegMutation.mutate(leg.id)} className="p-1 hover:text-destructive transition-colors text-muted-foreground">
+                              <Trash2 className="size-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </>
+            )}
+
+            {/* Totais (derivados dos trechos) */}
+            <div className="mt-3 pt-3 border-t border-border divide-y divide-border text-sm">
+              <div className="flex items-center justify-between py-2">
+                <span className="text-muted-foreground">
+                  Distância — {order.travelKm} km × {fmt(order.travelKmRate)}/km
+                </span>
+                <span className="font-semibold">{fmt(order.travelKm * order.travelKmRate)}</span>
+              </div>
+              <div className="flex items-center justify-between py-2">
+                <span className="text-muted-foreground">
+                  Tempo de viagem — {fmtHoursNum(order.travelHours)} × {fmt(order.travelHourRate)}/h
+                </span>
+                <span className="font-semibold">{fmt(order.travelHours * order.travelHourRate)}</span>
+              </div>
             </div>
-            <div className="flex items-center justify-between py-2.5">
-              <span className="text-muted-foreground">
-                Tempo de viagem — {order.travelHours}h × {fmt(order.travelHourRate)}/h
-              </span>
-              <span className="font-semibold">{fmt(order.travelHours * order.travelHourRate)}</span>
-            </div>
-          </div>
+          </>
         )}
       </SectionCard>
 
@@ -770,27 +907,37 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
       {modal === 'part' && (
         <PartModal parts={catalogParts} onClose={() => setModal(null)} onSubmit={(d) => addPartMutation.mutate(d)} isLoading={addPartMutation.isPending} />
       )}
+      {editingPart && (
+        <PartModal parts={catalogParts} initial={editingPart} onClose={() => setEditingPart(null)} onSubmit={(d) => updatePartMutation.mutate({ orderPartId: editingPart.id, data: d })} isLoading={updatePartMutation.isPending} />
+      )}
       {modal === 'workHour' && (
         <WorkHourModal defaultDate={today} onClose={() => setModal(null)} onSubmit={(d) => addWorkHourMutation.mutate(d)} isLoading={addWorkHourMutation.isPending} />
+      )}
+      {editingWorkHour && (
+        <WorkHourModal defaultDate={today} initial={editingWorkHour} onClose={() => setEditingWorkHour(null)} onSubmit={(d) => updateWorkHourMutation.mutate({ whId: editingWorkHour.id, data: d })} isLoading={updateWorkHourMutation.isPending} />
       )}
       {modal === 'cost' && (
         <CostModal onClose={() => setModal(null)} onSubmit={(d) => addCostMutation.mutate(d)} isLoading={addCostMutation.isPending} />
       )}
+      {editingCost && (
+        <CostModal initial={editingCost} onClose={() => setEditingCost(null)} onSubmit={(d) => updateCostMutation.mutate({ costId: editingCost.id, data: d })} isLoading={updateCostMutation.isPending} />
+      )}
       {modal === 'payment' && (
         <PaymentModal defaultDate={today} grandTotal={summary?.grandTotal} onClose={() => setModal(null)} onSubmit={(d) => addPaymentMutation.mutate(d)} isLoading={addPaymentMutation.isPending} />
       )}
-      {modal === 'travel' && (
-        <TravelModal
-          initial={{
-            travelKm: order.travelKm,
-            travelHours: order.travelHours,
-            travelKmRate: order.travelKmRate,
-            travelHourRate: order.travelHourRate,
-          }}
+      {modal === 'travelRates' && (
+        <TravelRatesModal
+          initial={{ travelKmRate: order.travelKmRate, travelHourRate: order.travelHourRate }}
           onClose={() => setModal(null)}
           onSubmit={(d) => saveTravelMutation.mutate(d)}
           isLoading={saveTravelMutation.isPending}
         />
+      )}
+      {modal === 'travelLeg' && (
+        <TravelLegModal defaultDate={today} onClose={() => setModal(null)} onSubmit={(d) => addTravelLegMutation.mutate(d)} isLoading={addTravelLegMutation.isPending} />
+      )}
+      {editingTravelLeg && (
+        <TravelLegModal defaultDate={today} initial={editingTravelLeg} onClose={() => setEditingTravelLeg(null)} onSubmit={(d) => updateTravelLegMutation.mutate({ legId: editingTravelLeg.id, data: d })} isLoading={updateTravelLegMutation.isPending} />
       )}
 
       {showDelete && (
@@ -842,14 +989,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
 const inputClass = 'w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/50 focus:border-ring transition-colors';
 
-function PartModal({ parts, onClose, onSubmit, isLoading }: {
+function PartModal({ parts, initial, onClose, onSubmit, isLoading }: {
   parts: { id: string; name: string; unitPrice: number; sku?: string }[];
+  initial?: { partName: string; quantity: number; unitPrice: number };
   onClose: () => void;
   onSubmit: (d: z.infer<typeof partSchema>) => void;
   isLoading: boolean;
 }) {
   const { register, handleSubmit, setValue, formState: { errors } } = useForm<z.infer<typeof partSchema>>({
     resolver: zodResolver(partSchema) as Resolver<z.infer<typeof partSchema>>,
+    defaultValues: initial
+      ? { partName: initial.partName, quantity: initial.quantity, unitPrice: initial.unitPrice }
+      : undefined,
   });
 
   function selectCatalog(e: React.ChangeEvent<HTMLSelectElement>) {
@@ -858,7 +1009,7 @@ function PartModal({ parts, onClose, onSubmit, isLoading }: {
   }
 
   return (
-    <Modal title="Adicionar Peça" onClose={onClose}>
+    <Modal title={initial ? 'Editar Peça' : 'Adicionar Peça'} onClose={onClose}>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
         {parts.length > 0 && (
           <div className="space-y-1">
@@ -886,25 +1037,33 @@ function PartModal({ parts, onClose, onSubmit, isLoading }: {
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Adicionar'}</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : initial ? 'Salvar' : 'Adicionar'}</Button>
         </div>
       </form>
     </Modal>
   );
 }
 
-function WorkHourModal({ defaultDate, onClose, onSubmit, isLoading }: {
+function WorkHourModal({ defaultDate, initial, onClose, onSubmit, isLoading }: {
   defaultDate: string;
+  initial?: WorkHour;
   onClose: () => void;
   onSubmit: (d: z.infer<typeof workHourSchema>) => void;
   isLoading: boolean;
 }) {
   const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof workHourSchema>>({
     resolver: zodResolver(workHourSchema) as Resolver<z.infer<typeof workHourSchema>>,
-    defaultValues: { workedDate: defaultDate, hourlyRate: 180 },
+    defaultValues: initial
+      ? {
+          hours: initial.hours,
+          hourlyRate: initial.hourlyRate,
+          workedDate: initial.workedDate.split('T')[0],
+          description: initial.description ?? '',
+        }
+      : { workedDate: defaultDate, hourlyRate: 180 },
   });
   return (
-    <Modal title="Registrar Horas" onClose={onClose}>
+    <Modal title={initial ? 'Editar Horas' : 'Registrar Horas'} onClose={onClose}>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
@@ -930,23 +1089,27 @@ function WorkHourModal({ defaultDate, onClose, onSubmit, isLoading }: {
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Registrar'}</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : initial ? 'Salvar' : 'Registrar'}</Button>
         </div>
       </form>
     </Modal>
   );
 }
 
-function CostModal({ onClose, onSubmit, isLoading }: {
+function CostModal({ initial, onClose, onSubmit, isLoading }: {
+  initial?: AdditionalCost;
   onClose: () => void;
   onSubmit: (d: z.infer<typeof costSchema>) => void;
   isLoading: boolean;
 }) {
   const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof costSchema>>({
     resolver: zodResolver(costSchema) as Resolver<z.infer<typeof costSchema>>,
+    defaultValues: initial
+      ? { description: initial.description, amount: initial.amount }
+      : undefined,
   });
   return (
-    <Modal title="Custo Adicional" onClose={onClose}>
+    <Modal title={initial ? 'Editar Custo' : 'Custo Adicional'} onClose={onClose}>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
         <div className="space-y-1">
           <label className="text-sm font-medium">Descrição *</label>
@@ -959,7 +1122,7 @@ function CostModal({ onClose, onSubmit, isLoading }: {
         </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
-          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Adicionar'}</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : initial ? 'Salvar' : 'Adicionar'}</Button>
         </div>
       </form>
     </Modal>
@@ -1018,54 +1181,105 @@ function SignaturesModal({
   );
 }
 
-function TravelModal({ initial, onClose, onSubmit, isLoading }: {
-  initial: z.infer<typeof travelSchema>;
+function TravelRatesModal({ initial, onClose, onSubmit, isLoading }: {
+  initial: z.infer<typeof travelRatesSchema>;
   onClose: () => void;
-  onSubmit: (d: z.infer<typeof travelSchema>) => void;
+  onSubmit: (d: z.infer<typeof travelRatesSchema>) => void;
   isLoading: boolean;
 }) {
-  const { register, handleSubmit, watch } = useForm<z.infer<typeof travelSchema>>({
-    resolver: zodResolver(travelSchema) as Resolver<z.infer<typeof travelSchema>>,
+  const { register, handleSubmit } = useForm<z.infer<typeof travelRatesSchema>>({
+    resolver: zodResolver(travelRatesSchema) as Resolver<z.infer<typeof travelRatesSchema>>,
     defaultValues: initial,
   });
 
-  const km   = Number(watch('travelKm'))       || 0;
-  const hrs  = Number(watch('travelHours'))     || 0;
-  const kmR  = Number(watch('travelKmRate'))    || 0;
-  const hrR  = Number(watch('travelHourRate'))  || 0;
-  const total = km * kmR + hrs * hrR;
-
   return (
-    <Modal title="Custos de Viagem" onClose={onClose}>
+    <Modal title="Taxas de Viagem" onClose={onClose}>
       <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          Padrão: R$ 1,50 por km rodado e R$ 100,00 por hora de viagem.
+          Padrão: R$ 1,50 por km rodado e R$ 100,00 por hora de viagem. Os totais
+          de km e horas vêm dos trechos cadastrados.
         </p>
         <div className="grid grid-cols-2 gap-3">
           <div className="space-y-1">
-            <label className="text-sm font-medium">Km rodados</label>
-            <input type="number" step="0.1" min="0" className={inputClass} {...register('travelKm')} />
-          </div>
-          <div className="space-y-1">
             <label className="text-sm font-medium">R$ por km</label>
             <input type="number" step="0.01" min="0" className={inputClass} {...register('travelKmRate')} />
-          </div>
-          <div className="space-y-1">
-            <label className="text-sm font-medium">Horas de viagem</label>
-            <input type="number" step="0.25" min="0" className={inputClass} {...register('travelHours')} />
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">R$ por hora</label>
             <input type="number" step="0.01" min="0" className={inputClass} {...register('travelHourRate')} />
           </div>
         </div>
-        <div className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2.5 text-sm">
-          <span className="font-medium">Total de viagem</span>
-          <span className="font-bold">{fmt(total)}</span>
-        </div>
         <div className="flex justify-end gap-2 pt-1">
           <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
           <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Salvar'}</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function TravelLegModal({ defaultDate, initial, onClose, onSubmit, isLoading }: {
+  defaultDate: string;
+  initial?: TravelLeg;
+  onClose: () => void;
+  onSubmit: (d: z.infer<typeof travelLegSchema>) => void;
+  isLoading: boolean;
+}) {
+  const { register, handleSubmit, watch, formState: { errors } } = useForm<z.infer<typeof travelLegSchema>>({
+    resolver: zodResolver(travelLegSchema) as Resolver<z.infer<typeof travelLegSchema>>,
+    defaultValues: initial
+      ? {
+          date: initial.date.split('T')[0],
+          description: initial.description ?? '',
+          departureTime: initial.departureTime,
+          arrivalTime: initial.arrivalTime,
+          km: initial.km,
+        }
+      : { date: defaultDate },
+  });
+
+  const dep = watch('departureTime');
+  const arr = watch('arrivalTime');
+  const duration = timeRegex.test(dep) && timeRegex.test(arr) ? legDuration(dep, arr) : null;
+
+  return (
+    <Modal title={initial ? 'Editar Trecho' : 'Adicionar Trecho'} onClose={onClose}>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Data *</label>
+          <input type="date" className={inputClass} {...register('date')} />
+          {errors.date && <p className="text-xs text-destructive">{errors.date.message}</p>}
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Descrição</label>
+          <input className={inputClass} placeholder="Ex: Ida — Cidade X" {...register('description')} />
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Saída *</label>
+            <input type="time" className={inputClass} {...register('departureTime')} />
+            {errors.departureTime && <p className="text-xs text-destructive">{errors.departureTime.message}</p>}
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Chegada *</label>
+            <input type="time" className={inputClass} {...register('arrivalTime')} />
+            {errors.arrivalTime && <p className="text-xs text-destructive">{errors.arrivalTime.message}</p>}
+          </div>
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Km rodados *</label>
+          <input type="number" step="0.1" min="0" className={inputClass} {...register('km')} />
+          {errors.km && <p className="text-xs text-destructive">{errors.km.message}</p>}
+        </div>
+        {duration && (
+          <div className="flex items-center justify-between rounded-lg bg-muted/30 px-3 py-2.5 text-sm">
+            <span className="font-medium">Duração do trecho</span>
+            <span className="font-bold">{duration}</span>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : initial ? 'Salvar' : 'Adicionar'}</Button>
         </div>
       </form>
     </Modal>
