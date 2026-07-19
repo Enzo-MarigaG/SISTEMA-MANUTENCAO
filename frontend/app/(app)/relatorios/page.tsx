@@ -258,6 +258,25 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
     return parts + hours + costs;
   };
 
+  // Bloco de texto livre (rótulo + conteúdo com quebra automática de linha).
+  // Não renderiza nada se o campo estiver vazio.
+  const textBlock = (label: string, value?: string | null) => {
+    const content = (value ?? '').trim();
+    if (!content) return;
+    pdf.setFontSize(8);
+    pdf.setFont('helvetica', 'normal');
+    const lines: string[] = pdf.splitTextToSize(content, R - L - 5);
+    checkPage(5 + lines.length * 4);
+    text(label, L + 2, y, { size: 7, bold: true, color: [80,80,80] });
+    nl(4);
+    for (const line of lines) {
+      checkPage(5);
+      text(line, L + 3, y, { size: 8, color: [50,50,50] });
+      nl(4);
+    }
+    nl(1.5);
+  };
+
   // Cabeçalho
   y = 16;
   text('ARC SOLUÇÕES INDUSTRIAIS', L, y, { size: 15, bold: true });
@@ -277,32 +296,55 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
     const orderTotal = calcTotal(order);
     grandTotal += orderTotal;
 
-    checkPage(35);
+    // Mantém a OS junta; se não couber inteira, começa em página nova.
+    checkPage(46);
+    const blockStartY = y;
+    const blockStartPage = page;
+    const RR = R - 3; // margem interna direita do cartão
 
-    // Cabeçalho da OS
+    // Faixa de topo da OS: número + data
     pdf.setFillColor(245, 245, 245);
     pdf.rect(L, y, R - L, 6, 'F');
-    text(`OS #${order.orderNumber}`, L + 2, y + 4, { size: 8, bold: true });
-    if (order.equipment) {
-      text(order.equipment, L + 25, y + 4, { size: 8, color: [100,100,100] });
-    }
-    text(new Date(order.entryDate).toLocaleDateString('pt-BR'), R - 2, y + 4, { size: 8, color: [100,100,100], align: 'right' });
+    text(`OS #${order.orderNumber}`, L + 3, y + 4, { size: 8.5, bold: true });
+    text(new Date(order.entryDate).toLocaleDateString('pt-BR'), RR, y + 4, { size: 8, color: [100,100,100], align: 'right' });
     y += 6;
-    nl(4);
+    nl(4.5);
 
+    // Descrições — só as que foram preenchidas na OS
+    textBlock('Problema Relatado', order.problemReported);
+    textBlock('Serviço Realizado', order.serviceDone);
+
+    // Valores detalhados — só o que existe na OS
     // Peças
     if (order.orderParts?.length > 0) {
       checkPage(8 + order.orderParts.length * 5);
-      text('Peças', L + 2, y, { size: 7, bold: true, color: [80,80,80] });
+      text('Peças', L + 3, y, { size: 7, bold: true, color: [80,80,80] });
       nl(4);
-      hline(y, [220,220,220]);
+      hline(y, [225,225,225]);
       nl(3.5);
       for (const p of order.orderParts) {
         checkPage(6);
-        text(p.partName, L + 3, y, { size: 8 });
-        text(`${p.quantity}×`, L + 95, y, { size: 8, align: 'right', color: [100,100,100] });
-        text(fmt(p.unitPrice), L + 125, y, { size: 8, align: 'right', color: [100,100,100] });
-        text(fmt(p.totalPrice), R, y, { size: 8, bold: true, align: 'right' });
+        text(p.partName, L + 4, y, { size: 8 });
+        text(`${p.quantity}×`, L + 96, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(p.unitPrice), L + 128, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(p.totalPrice), RR, y, { size: 8, bold: true, align: 'right' });
+        nl(5);
+      }
+    }
+
+    // Mão de obra
+    if (order.workHours?.length > 0) {
+      checkPage(8 + order.workHours.length * 5);
+      text('Mão de Obra', L + 3, y, { size: 7, bold: true, color: [80,80,80] });
+      nl(4);
+      hline(y, [225,225,225]);
+      nl(3.5);
+      for (const h of order.workHours) {
+        checkPage(6);
+        text(h.description || 'Serviço', L + 4, y, { size: 8 });
+        text(`${h.hours}h`, L + 96, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(h.hourlyRate), L + 128, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(h.totalCost), RR, y, { size: 8, bold: true, align: 'right' });
         nl(5);
       }
     }
@@ -310,25 +352,36 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
     // Custos adicionais
     if (order.additionalCosts?.length > 0) {
       checkPage(8 + order.additionalCosts.length * 5);
-      text('Custos Adicionais', L + 2, y, { size: 7, bold: true, color: [80,80,80] });
+      text('Custos Adicionais', L + 3, y, { size: 7, bold: true, color: [80,80,80] });
       nl(4);
-      hline(y, [220,220,220]);
+      hline(y, [225,225,225]);
       nl(3.5);
       for (const c of order.additionalCosts) {
         checkPage(6);
-        text(c.description, L + 3, y, { size: 8 });
-        text(fmt(c.amount), R, y, { size: 8, bold: true, align: 'right' });
+        text(c.description, L + 4, y, { size: 8 });
+        text(fmt(c.amount), RR, y, { size: 8, bold: true, align: 'right' });
         nl(5);
       }
     }
 
-    // Total da OS
+    // Valor final da OS
     checkPage(10);
+    nl(1);
     hline(y, [180,180,180]);
-    nl(4);
-    text('Total da OS', L + 2, y, { size: 9, bold: true });
-    text(fmt(orderTotal), R, y, { size: 9, bold: true, align: 'right' });
-    nl(8);
+    nl(4.5);
+    text('Total da OS', L + 3, y, { size: 9, bold: true });
+    text(fmt(orderTotal), RR, y, { size: 9, bold: true, align: 'right' });
+    nl(5);
+
+    // Contorno do cartão — só quando a OS coube inteira na página
+    if (page === blockStartPage) {
+      pdf.setLineWidth(0.3);
+      pdf.setDrawColor(220, 220, 220);
+      pdf.roundedRect(L, blockStartY, R - L, y - blockStartY, 2, 2, 'S');
+      pdf.setDrawColor(0, 0, 0);
+      pdf.setLineWidth(0.2);
+    }
+    nl(7);
   }
 
   // Total geral

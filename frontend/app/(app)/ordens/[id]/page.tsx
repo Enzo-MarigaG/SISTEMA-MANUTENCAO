@@ -198,7 +198,7 @@ const partSchema = z.object({
 
 const workHourSchema = z.object({
   hours:       z.coerce.number().min(0.25, 'Mínimo 0,25h'),
-  hourlyRate:  z.coerce.number().min(0),
+  hourlyRate:  z.coerce.number().min(0.01, 'Informe o valor/hora'),
   workedDate:  z.string().min(1, 'Data é obrigatória'),
   description: z.string().optional(),
 });
@@ -1060,7 +1060,7 @@ function WorkHourModal({ defaultDate, initial, onClose, onSubmit, isLoading }: {
           workedDate: initial.workedDate.split('T')[0],
           description: initial.description ?? '',
         }
-      : { workedDate: defaultDate, hourlyRate: 180 },
+      : { workedDate: defaultDate },
   });
   return (
     <Modal title={initial ? 'Editar Horas' : 'Registrar Horas'} onClose={onClose}>
@@ -1073,10 +1073,8 @@ function WorkHourModal({ defaultDate, initial, onClose, onSubmit, isLoading }: {
           </div>
           <div className="space-y-1">
             <label className="text-sm font-medium">Valor/hora (R$) *</label>
-            <select className={inputClass} {...register('hourlyRate')}>
-              <option value="180">R$ 180,00</option>
-              <option value="200">R$ 200,00</option>
-            </select>
+            <input type="number" step="0.01" min="0.01" placeholder="Ex: 180,00" className={inputClass} {...register('hourlyRate')} />
+            {errors.hourlyRate && <p className="text-xs text-destructive">{errors.hourlyRate.message}</p>}
           </div>
         </div>
         <div className="space-y-1">
