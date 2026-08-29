@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useQuery } from '@tanstack/react-query';
 import {
@@ -333,12 +334,12 @@ export default function DashboardPage() {
         <div className="overflow-hidden rounded-xl border border-border bg-card lg:col-span-2">
           <div className="flex items-center justify-between border-b border-border px-5 py-4">
             <h2 className="text-sm font-semibold">Ordens abertas recentes</h2>
-            <a
+            <Link
               href="/ordens"
               className="flex items-center gap-1 text-xs text-muted-foreground transition-colors hover:text-foreground"
             >
               Ver todas <ArrowRight className="size-3" />
-            </a>
+            </Link>
           </div>
 
           {!recentOrders?.length ? (

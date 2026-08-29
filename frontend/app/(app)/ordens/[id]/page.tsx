@@ -208,6 +208,12 @@ const costSchema = z.object({
   amount:      z.coerce.number().min(0),
 });
 
+const descriptionSchema = z.object({
+  problemReported: z.string().min(1, 'Problema relatado é obrigatório'),
+  serviceDone:     z.string().optional(),
+  observations:    z.string().optional(),
+});
+
 const paymentSchema = z.object({
   amountPaid:    z.coerce.number().min(0.01),
   paymentMethod: z.enum(['CASH', 'PIX', 'CREDIT_CARD', 'DEBIT_CARD', 'TRANSFER', 'OTHER']),
@@ -236,7 +242,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const { id } = use(params);
   const router  = useRouter();
   const qc      = useQueryClient();
-  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travelLeg' | 'travelRates' | null>(null);
+  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travelLeg' | 'travelRates' | 'description' | null>(null);
   const [editingPart, setEditingPart] = useState<OrderPart | null>(null);
   const [editingWorkHour, setEditingWorkHour] = useState<WorkHour | null>(null);
   const [editingCost, setEditingCost] = useState<AdditionalCost | null>(null);
@@ -268,6 +274,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   };
 
   const statusMutation      = useMutation({ mutationFn: (status: OrderStatus) => api.patch(`/service-orders/${id}/status`, { status }), onSuccess: invalidate });
+  const updateDescriptionMutation = useMutation({ mutationFn: (data: z.infer<typeof descriptionSchema>) => api.put(`/service-orders/${id}`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const addPartMutation      = useMutation({ mutationFn: (data: z.infer<typeof partSchema>) => api.post(`/service-orders/${id}/parts`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removePartMutation   = useMutation({ mutationFn: (orderPartId: string) => api.delete(`/service-orders/${id}/parts/${orderPartId}`), onSuccess: invalidate });
   const updatePartMutation   = useMutation({ mutationFn: ({ orderPartId, data }: { orderPartId: string; data: z.infer<typeof partSchema> }) => api.patch(`/service-orders/${id}/parts/${orderPartId}`, data), onSuccess: () => { invalidate(); setEditingPart(null); } });
@@ -312,6 +319,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
   const statusCfg = statusConfig[order.status];
   const today     = new Date().toISOString().split('T')[0];
+
+  // Problema, serviço e observações são editados juntos no mesmo modal.
+  const editDescription = (
+    <button onClick={() => setModal('description')} className="flex items-center gap-1 text-xs text-primary hover:underline print:hidden">
+      <Pencil className="size-3" /> Editar
+    </button>
+  );
 
   return (
     <div className="space-y-4 max-w-4xl print:max-w-none">
@@ -477,21 +491,21 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 
       {/* ─── Problema / Serviço ───────────────────────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-        <SectionCard title="Problema Relatado" icon={Wrench}>
+        <SectionCard title="Problema Relatado" icon={Wrench} action={editDescription}>
           <p className="text-sm whitespace-pre-wrap leading-relaxed">{order.problemReported}</p>
         </SectionCard>
-        <SectionCard title="Serviço Realizado" icon={Wrench}>
+        <SectionCard title="Serviço Realizado" icon={Wrench} action={editDescription}>
           <p className={`text-sm whitespace-pre-wrap leading-relaxed ${!order.serviceDone ? 'text-muted-foreground italic' : ''}`}>
             {order.serviceDone || 'Não preenchido'}
           </p>
         </SectionCard>
       </div>
 
-      {order.observations && (
-        <SectionCard title="Observações Técnicas" icon={FileText}>
-          <p className="text-sm whitespace-pre-wrap leading-relaxed">{order.observations}</p>
-        </SectionCard>
-      )}
+      <SectionCard title="Observações Técnicas" icon={FileText} action={editDescription}>
+        <p className={`text-sm whitespace-pre-wrap leading-relaxed ${!order.observations ? 'text-muted-foreground italic' : ''}`}>
+          {order.observations || 'Não preenchido'}
+        </p>
+      </SectionCard>
 
       {/* ─── Peças ────────────────────────────────────────────────────────────── */}
       <SectionCard
@@ -904,6 +918,18 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           isLoading={saveSignaturesMutation.isPending}
         />
       )}
+      {modal === 'description' && (
+        <DescriptionModal
+          initial={{
+            problemReported: order.problemReported,
+            serviceDone:     order.serviceDone,
+            observations:    order.observations,
+          }}
+          onClose={() => setModal(null)}
+          onSubmit={(d) => updateDescriptionMutation.mutate(d)}
+          isLoading={updateDescriptionMutation.isPending}
+        />
+      )}
       {modal === 'part' && (
         <PartModal parts={catalogParts} onClose={() => setModal(null)} onSubmit={(d) => addPartMutation.mutate(d)} isLoading={addPartMutation.isPending} />
       )}
@@ -988,6 +1014,48 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 // ─── Modais ───────────────────────────────────────────────────────────────────
 
 const inputClass = 'w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/50 focus:border-ring transition-colors';
+
+const textareaClass = `${inputClass} resize-y min-h-20`;
+
+function DescriptionModal({ initial, onClose, onSubmit, isLoading }: {
+  initial: { problemReported: string; serviceDone?: string; observations?: string };
+  onClose: () => void;
+  onSubmit: (d: z.infer<typeof descriptionSchema>) => void;
+  isLoading: boolean;
+}) {
+  const { register, handleSubmit, formState: { errors } } = useForm<z.infer<typeof descriptionSchema>>({
+    resolver: zodResolver(descriptionSchema) as Resolver<z.infer<typeof descriptionSchema>>,
+    defaultValues: {
+      problemReported: initial.problemReported,
+      serviceDone:     initial.serviceDone ?? '',
+      observations:    initial.observations ?? '',
+    },
+  });
+
+  return (
+    <Modal title="Editar Descrição" onClose={onClose}>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Problema Relatado *</label>
+          <textarea rows={4} className={textareaClass} placeholder="Descreva o problema..." {...register('problemReported')} />
+          {errors.problemReported && <p className="text-xs text-destructive">{errors.problemReported.message}</p>}
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Serviço Realizado</label>
+          <textarea rows={4} className={textareaClass} placeholder="Descreva o serviço executado..." {...register('serviceDone')} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Observações Técnicas</label>
+          <textarea rows={3} className={textareaClass} placeholder="Recomendações, pendências, avisos..." {...register('observations')} />
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Salvar'}</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 function PartModal({ parts, initial, onClose, onSubmit, isLoading }: {
   parts: { id: string; name: string; unitPrice: number; sku?: string }[];
