@@ -16,6 +16,13 @@ import { SaveSignaturesDto } from './dto/save-signatures.dto.js';
 import { SaveTravelDto } from './dto/save-travel.dto.js';
 import { CreateTravelLegDto } from './dto/create-travel-leg.dto.js';
 import { UpdateTravelLegDto } from './dto/update-travel-leg.dto.js';
+import {
+  BILLABLE_WHERE,
+  ORDER_TOTALS_INCLUDE,
+  TRAVEL_SELECT,
+  computeOrderTotals,
+  sumTravel,
+} from './order-totals.js';
 
 /**
  * Converte uma string de data em Date.
@@ -28,6 +35,14 @@ function toDate(value?: string | null): Date | undefined {
   return /^\d{4}-\d{2}-\d{2}$/.test(value)
     ? new Date(`${value}T12:00:00.000Z`)
     : new Date(value);
+}
+
+/**
+ * Como toDate, mas preserva o null explícito: campos de data opcionais podem
+ * ser limpos ao editar as informações da OS.
+ */
+function toNullableDate(value?: string | null): Date | null | undefined {
+  return value === null ? null : toDate(value);
 }
 
 @Injectable()
@@ -132,18 +147,21 @@ export class ServiceOrdersService {
   async update(id: string, dto: UpdateServiceOrderDto) {
     await this.findOne(id);
     // FINISHED é o status de encerramento — registra a data/hora de saída.
+    // Só preenche sozinho quando exitDate não veio no payload; um null explícito
+    // (edição manual das informações da OS) limpa a data.
     const isClosing =
       dto.status === OrderStatus.FINISHED ||
       dto.status === OrderStatus.DELIVERED;
-    if (isClosing && !dto.exitDate) {
+    if (isClosing && dto.exitDate === undefined) {
       dto.exitDate = new Date().toISOString();
     }
     return this.prisma.serviceOrder.update({
       where: { id },
       data: {
         ...dto,
-        estimatedDate: toDate(dto.estimatedDate),
-        exitDate: toDate(dto.exitDate),
+        entryDate: toDate(dto.entryDate),
+        estimatedDate: toNullableDate(dto.estimatedDate),
+        exitDate: toNullableDate(dto.exitDate),
       },
       include: this.listIncludes(),
     });
@@ -587,59 +605,27 @@ export class ServiceOrdersService {
   // ─── Resumo Financeiro ───────────────────────────────────
 
   async getSummary(serviceOrderId: string) {
-    const [parts, workHours, costs, payments, order] = await Promise.all([
-      this.prisma.orderPart.aggregate({
-        where: { serviceOrderId },
-        _sum: { totalPrice: true },
-      }),
-      this.prisma.workHour.aggregate({
-        where: { serviceOrderId },
-        _sum: { totalCost: true, hours: true },
-      }),
-      this.prisma.additionalCost.aggregate({
-        where: { serviceOrderId },
-        _sum: { amount: true },
-      }),
-      this.prisma.payment.findMany({ where: { serviceOrderId } }),
-      this.prisma.serviceOrder.findUnique({
-        where: { id: serviceOrderId },
-        select: {
-          travelKm: true,
-          travelHours: true,
-          travelKmRate: true,
-          travelHourRate: true,
-        },
-      }),
-    ]);
+    const order = await this.prisma.serviceOrder.findUnique({
+      where: { id: serviceOrderId },
+      select: { ...TRAVEL_SELECT, ...ORDER_TOTALS_INCLUDE },
+    });
+    if (!order) throw new NotFoundException('Ordem de serviço não encontrada');
 
-    const partsTotal = parts._sum.totalPrice ?? 0;
-    const hoursTotal = workHours._sum.totalCost ?? 0;
-    const costsTotal = costs._sum.amount ?? 0;
-    const travelTotal = order
-      ? order.travelKm * order.travelKmRate +
-        order.travelHours * order.travelHourRate
-      : 0;
-    const grandTotal = partsTotal + hoursTotal + costsTotal + travelTotal;
-    const totalPaid = payments.reduce((s, p) => s + p.amountPaid, 0);
-
-    return {
-      partsTotal,
-      hoursTotal,
-      costsTotal,
-      travelTotal,
-      grandTotal,
-      totalPaid,
-      remaining: grandTotal - totalPaid,
-    };
+    return computeOrderTotals(order);
   }
 
   // ─── Relatório de Faturamento por Cliente ────────────────
 
+  /**
+   * OS faturáveis do cliente no período, cada uma já com seus totais calculados
+   * — o consumidor não repete a fórmula.
+   */
   async getBillingReport(customerId: string, startDate: Date, endDate: Date) {
-    return this.prisma.serviceOrder.findMany({
+    const orders = await this.prisma.serviceOrder.findMany({
       where: {
         customerId,
         entryDate: { gte: startDate, lte: endDate },
+        ...BILLABLE_WHERE,
       },
       include: {
         customer: true,
@@ -647,21 +633,28 @@ export class ServiceOrdersService {
         additionalCosts: { orderBy: { createdAt: 'asc' } },
         workHours: { orderBy: { workedDate: 'asc' } },
         payments: { orderBy: { createdAt: 'asc' } },
+        travelLegs: { orderBy: [{ date: 'asc' }, { departureTime: 'asc' }] },
       },
       orderBy: { entryDate: 'asc' },
     });
+
+    return orders.map((order) => ({
+      ...order,
+      totals: computeOrderTotals(order),
+    }));
   }
 
   // ─── Stats para Dashboard ────────────────────────────────
 
   /**
    * Faturamento de um período = soma do valor total (peças + mão de obra +
-   * custos adicionais + viagem) das OS cujo entryDate cai no período.
-   * Ao contrário do total pago, sobe a cada OS criada/preenchida no mês.
+   * custos adicionais + viagem) das OS faturáveis cujo entryDate cai no período.
+   * Ao contrário do total pago, sobe assim que a OS é concluída no mês.
    */
   private async revenueForPeriod(start: Date, end?: Date) {
     const entryDate = end ? { gte: start, lt: end } : { gte: start };
-    const orderFilter = { serviceOrder: { entryDate } };
+    const orderWhere = { entryDate, ...BILLABLE_WHERE };
+    const orderFilter = { serviceOrder: orderWhere };
 
     const [parts, hours, costs, orders] = await Promise.all([
       this.prisma.orderPart.aggregate({
@@ -677,27 +670,16 @@ export class ServiceOrdersService {
         _sum: { amount: true },
       }),
       this.prisma.serviceOrder.findMany({
-        where: { entryDate },
-        select: {
-          travelKm: true,
-          travelHours: true,
-          travelKmRate: true,
-          travelHourRate: true,
-        },
+        where: orderWhere,
+        select: TRAVEL_SELECT,
       }),
     ]);
-
-    const travel = orders.reduce(
-      (s, o) =>
-        s + o.travelKm * o.travelKmRate + o.travelHours * o.travelHourRate,
-      0,
-    );
 
     return (
       (parts._sum.totalPrice ?? 0) +
       (hours._sum.totalCost ?? 0) +
       (costs._sum.amount ?? 0) +
-      travel
+      sumTravel(orders)
     );
   }
 

@@ -3,11 +3,15 @@
 import { use, useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import api from '@/lib/api';
+import type {
+  AdditionalCost, OrderPart, OrderTotals, ServiceOrder, TravelLeg, WorkHour,
+} from '@/lib/types';
 
 const fmt = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const num = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 const fmtDate = (d: string) => new Date(d).toLocaleDateString('pt-BR');
 
-async function gerarPdf(order: any, summary: any, hideValues = false) {
+async function gerarPdf(order: ServiceOrder, summary: OrderTotals, hideValues = false) {
   const { jsPDF } = await import('jspdf');
 
   const pdf = new jsPDF('p', 'mm', 'a4');
@@ -144,7 +148,7 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
       text('Total', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
     }
     nl(2.5); hline(); nl(3.5);
-    order.orderParts.forEach((p: any) => {
+    order.orderParts.forEach((p: OrderPart) => {
       const name = pdf.splitTextToSize(p.partName, hideValues ? 150 : 80)[0];
       text(name, L, y, { size: 9 });
       if (hideValues) {
@@ -172,7 +176,7 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
       text('Total', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
     }
     nl(2.5); hline(); nl(3.5);
-    order.workHours.forEach((wh: any) => {
+    order.workHours.forEach((wh: WorkHour) => {
       text(fmtDate(wh.workedDate), L, y, { size: 8 });
       const desc = pdf.splitTextToSize(wh.description || '—', hideValues ? 120 : 75)[0];
       text(desc, L + 25, y, { size: 8, color: [120, 120, 120] });
@@ -188,7 +192,7 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
   }
 
   // ── Deslocamento / Viagem ──────────────────────────────────────────────────
-  if (order.travelLegs?.length > 0) {
+  if (order.travelLegs?.length > 0 || summary.travelTotal > 0) {
     const legDur = (dep: string, arr: string) => {
       const [dh, dm] = dep.split(':').map(Number);
       const [ah, am] = arr.split(':').map(Number);
@@ -200,19 +204,42 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
     };
     sectionTitle('Deslocamento / Viagem');
     nl(4);
-    text('Data', L, y, { size: 7, bold: true, color: [100, 100, 100] });
-    text('Descrição', L + 25, y, { size: 7, bold: true, color: [100, 100, 100] });
-    text('Saída → Chegada', L + 105, y, { size: 7, bold: true, color: [100, 100, 100] });
-    text('Km', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
-    nl(2.5); hline(); nl(3.5);
-    order.travelLegs.forEach((leg: any) => {
-      text(fmtDate(leg.date), L, y, { size: 8 });
-      const desc = pdf.splitTextToSize(leg.description || '—', 75)[0];
-      text(desc, L + 25, y, { size: 8, color: [120, 120, 120] });
-      text(`${leg.departureTime} → ${leg.arrivalTime}  (${legDur(leg.departureTime, leg.arrivalTime)})`, L + 105, y, { size: 8 });
-      text(`${leg.km} km`, R, y, { size: 8, bold: true, align: 'right' });
-      nl(5);
-    });
+
+    if (order.travelLegs?.length > 0) {
+      text('Data', L, y, { size: 7, bold: true, color: [100, 100, 100] });
+      text('Descrição', L + 25, y, { size: 7, bold: true, color: [100, 100, 100] });
+      text('Saída → Chegada', L + 105, y, { size: 7, bold: true, color: [100, 100, 100] });
+      text('Km', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
+      nl(2.5); hline(); nl(3.5);
+      order.travelLegs.forEach((leg: TravelLeg) => {
+        text(fmtDate(leg.date), L, y, { size: 8 });
+        const desc = pdf.splitTextToSize(leg.description || '—', 75)[0];
+        text(desc, L + 25, y, { size: 8, color: [120, 120, 120] });
+        text(`${leg.departureTime} → ${leg.arrivalTime}  (${legDur(leg.departureTime, leg.arrivalTime)})`, L + 105, y, { size: 8 });
+        text(`${leg.km} km`, R, y, { size: 8, bold: true, align: 'right' });
+        nl(5);
+      });
+    }
+
+    // Como o deslocamento vira valor — para o cliente conferir a linha
+    // "Viagem" do resumo. Omitido na via do funcionário.
+    if (!hideValues) {
+      if (order.travelLegs?.length > 0) { nl(1); hline(); nl(3.5); }
+      if (summary.travelKmTotal > 0) {
+        text('Quilometragem', L, y, { size: 8, color: [120, 120, 120] });
+        text(`${num(order.travelKm)} km`, L + 105, y, { size: 8, align: 'right' });
+        text(fmt(order.travelKmRate), L + 135, y, { size: 8, align: 'right' });
+        text(fmt(summary.travelKmTotal), R, y, { size: 8, bold: true, align: 'right' });
+        nl(5);
+      }
+      if (summary.travelHourTotal > 0) {
+        text('Horas de viagem', L, y, { size: 8, color: [120, 120, 120] });
+        text(`${num(order.travelHours)}h`, L + 105, y, { size: 8, align: 'right' });
+        text(fmt(order.travelHourRate), L + 135, y, { size: 8, align: 'right' });
+        text(fmt(summary.travelHourTotal), R, y, { size: 8, bold: true, align: 'right' });
+        nl(5);
+      }
+    }
   }
 
   // ── Custos adicionais (omitidos na via sem valores) ────────────────────────
@@ -222,7 +249,7 @@ async function gerarPdf(order: any, summary: any, hideValues = false) {
     text('Descrição', L, y, { size: 7, bold: true, color: [100, 100, 100] });
     text('Valor', R, y, { size: 7, bold: true, color: [100, 100, 100], align: 'right' });
     nl(2.5); hline(); nl(3.5);
-    order.additionalCosts.forEach((c: any) => {
+    order.additionalCosts.forEach((c: AdditionalCost) => {
       text(c.description, L, y, { size: 9 });
       text(fmt(c.amount), R, y, { size: 9, bold: true, align: 'right' });
       nl(5);
@@ -300,12 +327,12 @@ export default function OsPdfPage({ params }: { params: Promise<{ id: string }> 
       && new URLSearchParams(window.location.search).get('semValores') === '1',
   );
 
-  const { data: order } = useQuery<any>({
+  const { data: order } = useQuery<ServiceOrder>({
     queryKey: ['pdf-order', id],
     queryFn: () => api.get(`/service-orders/${id}`).then(r => r.data),
   });
 
-  const { data: summary } = useQuery<any>({
+  const { data: summary } = useQuery<OrderTotals>({
     queryKey: ['pdf-summary', id],
     queryFn: () => api.get(`/service-orders/${id}/summary`).then(r => r.data),
     enabled: !!order,
@@ -317,9 +344,9 @@ export default function OsPdfPage({ params }: { params: Promise<{ id: string }> 
     try {
       await gerarPdf(order, summary, hideValues);
       setStatus('done');
-    } catch (err: any) {
+    } catch (err) {
       console.error('Erro ao gerar PDF:', err);
-      setErrorMsg(err?.message ?? 'Erro desconhecido');
+      setErrorMsg(err instanceof Error ? err.message : 'Erro desconhecido');
       setStatus('error');
     }
   };

@@ -14,7 +14,7 @@ export class UpdateServiceOrderDto {
 
   @IsOptional()
   @IsString()
-  equipment?: string;
+  equipment?: string | null;
 
   @IsOptional()
   @IsString()
@@ -34,9 +34,14 @@ export class UpdateServiceOrderDto {
 
   @IsOptional()
   @IsDateString()
-  estimatedDate?: string;
+  entryDate?: string;
+
+  // estimatedDate/exitDate aceitam null para limpar a data já gravada.
+  @IsOptional()
+  @IsDateString()
+  estimatedDate?: string | null;
 
   @IsOptional()
   @IsDateString()
-  exitDate?: string;
+  exitDate?: string | null;
 }

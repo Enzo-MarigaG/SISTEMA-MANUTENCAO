@@ -3,102 +3,21 @@
 import { useState, use, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { useForm, type Resolver } from 'react-hook-form';
+import { useForm, useWatch, type Resolver } from 'react-hook-form';
 import { z } from 'zod';
 import { zodResolver } from '@hookform/resolvers/zod';
 import api from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import {
   ArrowLeft, Plus, Trash2, X, Printer, ChevronRight,
-  User, Wrench, Package, Clock, Receipt, CreditCard,
+  User, Wrench, Package, Clock, Receipt,
   CalendarDays, FileText, DollarSign, AlertTriangle, PenLine, Car, Pencil,
 } from 'lucide-react';
 import { SignaturePad, type SignaturePadHandle } from '@/components/signature-pad';
-
-// ─── Tipos ───────────────────────────────────────────────────────────────────
-
-type OrderStatus = 'OPEN' | 'IN_PROGRESS' | 'FINISHED' | 'DELIVERED';
-type PaymentMethod = 'CASH' | 'PIX' | 'CREDIT_CARD' | 'DEBIT_CARD' | 'TRANSFER' | 'OTHER';
-type PaymentStatus = 'PAID' | 'PENDING' | 'PARTIAL';
-
-interface ServiceOrder {
-  id: string;
-  orderNumber: number;
-  status: OrderStatus;
-  equipment?: string;
-  problemReported: string;
-  serviceDone?: string;
-  observations?: string;
-  entryDate: string;
-  exitDate?: string;
-  estimatedDate?: string;
-  signatureTechnician?: string | null;
-  signatureCustomer?: string | null;
-  signedAt?: string | null;
-  travelKm: number;
-  travelHours: number;
-  travelKmRate: number;
-  travelHourRate: number;
-  customer: { id: string; name: string; phone?: string; email?: string; address?: string };
-  technician?: { id: string; name: string; pixKey?: string };
-  orderParts: OrderPart[];
-  workHours: WorkHour[];
-  additionalCosts: AdditionalCost[];
-  payments: Payment[];
-  travelLegs: TravelLeg[];
-}
-
-interface TravelLeg {
-  id: string;
-  date: string;
-  departureTime: string;
-  arrivalTime: string;
-  km: number;
-  description?: string;
-}
-
-interface OrderPart {
-  id: string;
-  partName: string;
-  quantity: number;
-  unitPrice: number;
-  totalPrice: number;
-  part?: { sku?: string };
-}
-
-interface WorkHour {
-  id: string;
-  hours: number;
-  hourlyRate: number;
-  totalCost: number;
-  workedDate: string;
-  description?: string;
-}
-
-interface AdditionalCost {
-  id: string;
-  description: string;
-  amount: number;
-}
-
-interface Payment {
-  id: string;
-  amountPaid: number;
-  paymentMethod: PaymentMethod;
-  paymentStatus: PaymentStatus;
-  paymentDate?: string;
-  notes?: string;
-}
-
-interface Summary {
-  partsTotal: number;
-  hoursTotal: number;
-  costsTotal: number;
-  travelTotal: number;
-  grandTotal: number;
-  totalPaid: number;
-  remaining: number;
-}
+import type {
+  AdditionalCost, OrderPart, OrderStatus, OrderTotals,
+  ServiceOrder, TravelLeg, WorkHour,
+} from '@/lib/types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -109,19 +28,18 @@ const statusConfig: Record<OrderStatus, { label: string; color: string; dot: str
   DELIVERED:   { label: 'Entregue',     color: 'bg-gray-100 text-gray-600 border-gray-200',   dot: 'bg-gray-400' },
 };
 
-const paymentMethodLabel: Record<PaymentMethod, string> = {
-  CASH: 'Dinheiro', PIX: 'PIX', CREDIT_CARD: 'Cartão Crédito',
-  DEBIT_CARD: 'Cartão Débito', TRANSFER: 'Transferência', OTHER: 'Outro',
-};
-
-const paymentStatusLabel: Record<PaymentStatus, { label: string; color: string }> = {
-  PAID:    { label: 'Pago',     color: 'text-green-700 bg-green-50 border-green-200' },
-  PENDING: { label: 'Pendente', color: 'text-red-600 bg-red-50 border-red-200' },
-  PARTIAL: { label: 'Parcial',  color: 'text-yellow-700 bg-yellow-50 border-yellow-200' },
-};
-
 const fmt     = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
 const fmtDate = (d: string) => new Date(d).toLocaleDateString('pt-BR');
+
+// "YYYY-MM-DD" no fuso local, para preencher <input type="date"> com o mesmo
+// dia que fmtDate exibe.
+const toDateInput = (d?: string | null) => {
+  if (!d) return '';
+  const dt = new Date(d);
+  return new Date(dt.getTime() - dt.getTimezoneOffset() * 60000)
+    .toISOString()
+    .split('T')[0];
+};
 
 // Formata horas decimais como "2h" ou "2h30"
 const fmtHoursNum = (hours: number) => {
@@ -208,6 +126,14 @@ const costSchema = z.object({
   amount:      z.coerce.number().min(0),
 });
 
+const infoSchema = z.object({
+  equipment:     z.string().optional(),
+  status:        z.enum(['OPEN', 'IN_PROGRESS', 'FINISHED', 'DELIVERED']),
+  entryDate:     z.string().min(1, 'Data de início é obrigatória'),
+  estimatedDate: z.string().optional(),
+  exitDate:      z.string().optional(),
+});
+
 const descriptionSchema = z.object({
   problemReported: z.string().min(1, 'Problema relatado é obrigatório'),
   serviceDone:     z.string().optional(),
@@ -242,7 +168,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   const { id } = use(params);
   const router  = useRouter();
   const qc      = useQueryClient();
-  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travelLeg' | 'travelRates' | 'description' | null>(null);
+  const [modal, setModal] = useState<'part' | 'workHour' | 'cost' | 'payment' | 'signatures' | 'travelLeg' | 'travelRates' | 'description' | 'info' | null>(null);
   const [editingPart, setEditingPart] = useState<OrderPart | null>(null);
   const [editingWorkHour, setEditingWorkHour] = useState<WorkHour | null>(null);
   const [editingCost, setEditingCost] = useState<AdditionalCost | null>(null);
@@ -255,7 +181,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
     queryFn:  () => api.get(`/service-orders/${id}`).then(r => r.data),
   });
 
-  const { data: summary } = useQuery<Summary>({
+  const { data: summary } = useQuery<OrderTotals>({
     queryKey: ['service-order-summary', id],
     queryFn:  () => api.get(`/service-orders/${id}/summary`).then(r => r.data),
     enabled:  !!order,
@@ -274,6 +200,17 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
   };
 
   const statusMutation      = useMutation({ mutationFn: (status: OrderStatus) => api.patch(`/service-orders/${id}/status`, { status }), onSuccess: invalidate });
+  // Datas e equipamento vazios viram null para limpar o valor já gravado.
+  const updateInfoMutation  = useMutation({
+    mutationFn: (data: z.infer<typeof infoSchema>) => api.put(`/service-orders/${id}`, {
+      equipment:     data.equipment?.trim() || null,
+      status:        data.status,
+      entryDate:     data.entryDate,
+      estimatedDate: data.estimatedDate || null,
+      exitDate:      data.exitDate || null,
+    }),
+    onSuccess: () => { invalidate(); setModal(null); },
+  });
   const updateDescriptionMutation = useMutation({ mutationFn: (data: z.infer<typeof descriptionSchema>) => api.put(`/service-orders/${id}`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const addPartMutation      = useMutation({ mutationFn: (data: z.infer<typeof partSchema>) => api.post(`/service-orders/${id}/parts`, data), onSuccess: () => { invalidate(); setModal(null); } });
   const removePartMutation   = useMutation({ mutationFn: (orderPartId: string) => api.delete(`/service-orders/${id}/parts/${orderPartId}`), onSuccess: invalidate });
@@ -459,18 +396,32 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           </dl>
         </SectionCard>
 
-        <SectionCard title="Informações da OS" icon={FileText}>
+        <SectionCard
+          title="Informações da OS"
+          icon={FileText}
+          action={
+            <button onClick={() => setModal('info')} className="flex items-center gap-1 text-xs text-primary hover:underline print:hidden">
+              <Pencil className="size-3" /> Editar
+            </button>
+          }
+        >
           <dl className="space-y-2.5 text-sm">
-            {order.equipment && (
-              <div>
-                <dt className="text-xs text-muted-foreground mb-0.5">Equipamento</dt>
-                <dd className="font-medium">{order.equipment}</dd>
-              </div>
-            )}
+            <div>
+              <dt className="text-xs text-muted-foreground mb-0.5">Equipamento</dt>
+              <dd className={order.equipment ? 'font-medium' : 'text-muted-foreground italic'}>
+                {order.equipment || 'Não preenchido'}
+              </dd>
+            </div>
             <div>
               <dt className="text-xs text-muted-foreground mb-0.5">Data de Início</dt>
               <dd>{fmtDate(order.entryDate)}</dd>
             </div>
+            {order.estimatedDate && (
+              <div>
+                <dt className="text-xs text-muted-foreground mb-0.5">Previsão de Entrega</dt>
+                <dd>{fmtDate(order.estimatedDate)}</dd>
+              </div>
+            )}
             {order.exitDate && (
               <div>
                 <dt className="text-xs text-muted-foreground mb-0.5">Data de Encerramento</dt>
@@ -918,6 +869,21 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
           isLoading={saveSignaturesMutation.isPending}
         />
       )}
+      {modal === 'info' && (
+        <InfoModal
+          defaultDate={today}
+          initial={{
+            equipment:     order.equipment ?? '',
+            status:        order.status,
+            entryDate:     toDateInput(order.entryDate),
+            estimatedDate: toDateInput(order.estimatedDate),
+            exitDate:      toDateInput(order.exitDate),
+          }}
+          onClose={() => setModal(null)}
+          onSubmit={(d) => updateInfoMutation.mutate(d)}
+          isLoading={updateInfoMutation.isPending}
+        />
+      )}
       {modal === 'description' && (
         <DescriptionModal
           initial={{
@@ -1016,6 +982,73 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
 const inputClass = 'w-full rounded-lg border border-input bg-background px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-ring/50 focus:border-ring transition-colors';
 
 const textareaClass = `${inputClass} resize-y min-h-20`;
+
+function InfoModal({ defaultDate, initial, onClose, onSubmit, isLoading }: {
+  defaultDate: string;
+  initial: z.infer<typeof infoSchema>;
+  onClose: () => void;
+  onSubmit: (d: z.infer<typeof infoSchema>) => void;
+  isLoading: boolean;
+}) {
+  const { register, handleSubmit, setValue, getValues, formState: { errors } } =
+    useForm<z.infer<typeof infoSchema>>({
+      resolver: zodResolver(infoSchema) as Resolver<z.infer<typeof infoSchema>>,
+      defaultValues: initial,
+    });
+
+  // Ao encerrar a OS, sugere hoje como data de encerramento se ainda não houver.
+  const statusField = register('status');
+
+  return (
+    <Modal title="Editar Informações da OS" onClose={onClose}>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-3">
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Equipamento</label>
+          <input className={inputClass} placeholder="Ex: Notebook Dell Inspiron" {...register('equipment')} />
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Status *</label>
+          <select
+            className={inputClass}
+            {...statusField}
+            onChange={(e) => {
+              void statusField.onChange(e);
+              const closing = e.target.value === 'FINISHED' || e.target.value === 'DELIVERED';
+              if (closing && !getValues('exitDate')) setValue('exitDate', defaultDate);
+            }}
+          >
+            <option value="OPEN">Aberta</option>
+            <option value="IN_PROGRESS">Em Andamento</option>
+            <option value="FINISHED">Finalizada</option>
+            <option value="DELIVERED">Entregue</option>
+          </select>
+        </div>
+        <div className="space-y-1">
+          <label className="text-sm font-medium">Data de Início *</label>
+          <input type="date" className={inputClass} {...register('entryDate')} />
+          {errors.entryDate && <p className="text-xs text-destructive">{errors.entryDate.message}</p>}
+        </div>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Previsão de Entrega</label>
+            <input type="date" className={inputClass} {...register('estimatedDate')} />
+          </div>
+          <div className="space-y-1">
+            <label className="text-sm font-medium">Data de Encerramento</label>
+            <input type="date" className={inputClass} {...register('exitDate')} />
+          </div>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Deixe uma data em branco para removê-la da OS.
+        </p>
+        <div className="flex justify-end gap-2 pt-1">
+          <Button type="button" variant="outline" onClick={onClose}>Cancelar</Button>
+          <Button type="submit" disabled={isLoading}>{isLoading ? 'Salvando...' : 'Salvar'}</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
 
 function DescriptionModal({ initial, onClose, onSubmit, isLoading }: {
   initial: { problemReported: string; serviceDone?: string; observations?: string };
@@ -1291,7 +1324,7 @@ function TravelLegModal({ defaultDate, initial, onClose, onSubmit, isLoading }: 
   onSubmit: (d: z.infer<typeof travelLegSchema>) => void;
   isLoading: boolean;
 }) {
-  const { register, handleSubmit, watch, formState: { errors } } = useForm<z.infer<typeof travelLegSchema>>({
+  const { register, handleSubmit, control, formState: { errors } } = useForm<z.infer<typeof travelLegSchema>>({
     resolver: zodResolver(travelLegSchema) as Resolver<z.infer<typeof travelLegSchema>>,
     defaultValues: initial
       ? {
@@ -1304,8 +1337,10 @@ function TravelLegModal({ defaultDate, initial, onClose, onSubmit, isLoading }: 
       : { date: defaultDate },
   });
 
-  const dep = watch('departureTime');
-  const arr = watch('arrivalTime');
+  // useWatch em vez de watch(): assina o campo e devolve valor, não função —
+  // watch() faz o React Compiler pular a memoização do componente inteiro.
+  const dep = useWatch({ control, name: 'departureTime' });
+  const arr = useWatch({ control, name: 'arrivalTime' });
   const duration = timeRegex.test(dep) && timeRegex.test(arr) ? legDuration(dep, arr) : null;
 
   return (

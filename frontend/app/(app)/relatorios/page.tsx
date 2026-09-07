@@ -9,15 +9,23 @@ import {
 import api from '@/lib/api';
 import { TrendingUp, TrendingDown, DollarSign, Users, ClipboardList, Download, FileText, Search } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import type {
+  BillingOrder, DashboardReport, MonthlyRevenue, StatusCount, TopCustomer,
+} from '@/lib/types';
 
 const fmt = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+const num = (v: number) => v.toLocaleString('pt-BR', { maximumFractionDigits: 2 });
 const PIE_COLORS = ['#3b82f6', '#eab308', '#22c55e', '#6b7280'];
 
 const MONTHS_PT = ['Janeiro','Fevereiro','Março','Abril','Maio','Junho',
   'Julho','Agosto','Setembro','Outubro','Novembro','Dezembro'];
 
+// Os totais de cada OS vêm prontos do backend (computeOrderTotals), a mesma
+// fórmula do resumo financeiro da OS. Não recalcular aqui — foi a duplicação
+// dessa conta que fez o faturamento por cliente ficar sem o deslocamento.
+
 // ── Gerador PDF mensal ────────────────────────────────────────────────────────
-async function gerarPdfMensal(dashboard: any, byStatus: any[]) {
+async function gerarPdfMensal(dashboard: DashboardReport, byStatus: StatusCount[]) {
   const { jsPDF } = await import('jspdf');
   const pdf = new jsPDF('p', 'mm', 'a4');
   const W = pdf.internal.pageSize.getWidth();
@@ -103,9 +111,9 @@ async function gerarPdfMensal(dashboard: any, byStatus: any[]) {
 // ── Gerador PDF anual ─────────────────────────────────────────────────────────
 async function gerarPdfAnual(
   year: number,
-  monthlyRevenue: { month: number; label: string; revenue: number }[],
-  byStatus: any[],
-  topCustomers: any[],
+  monthlyRevenue: MonthlyRevenue[],
+  byStatus: StatusCount[],
+  topCustomers: TopCustomer[],
 ) {
   const { jsPDF } = await import('jspdf');
   const pdf = new jsPDF('p', 'mm', 'a4');
@@ -162,7 +170,7 @@ async function gerarPdfAnual(
 
   let totalAnual = 0;
   let totalClientesAnuais = 0;
-  monthlyRevenue.forEach((m: any) => {
+  monthlyRevenue.forEach((m) => {
     const hasRevenue = m.revenue > 0 || m.customersCount > 0;
     text(MONTHS_PT[m.month - 1], L, y, { size: 9, color: hasRevenue ? [50,50,50] : [180,180,180] });
     text(
@@ -203,7 +211,7 @@ async function gerarPdfAnual(
   }
 
   // Rodapé
-  const totalPages = (pdf as any).internal.getNumberOfPages();
+  const totalPages = pdf.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
     pdf.setPage(i);
     text(`Página ${i} de ${totalPages}`, W/2, H-5, { size: 7, color: [180,180,180], align: 'center' });
@@ -213,7 +221,7 @@ async function gerarPdfAnual(
 }
 
 // ── Gerador PDF de Faturamento por Cliente ────────────────────────────────────
-async function gerarPdfFaturamento(orders: any[], customerName: string, monthLabel: string, pixKey?: string) {
+async function gerarPdfFaturamento(orders: BillingOrder[], customerName: string, monthLabel: string, pixKey?: string) {
   const { jsPDF } = await import('jspdf');
   const pdf = new jsPDF('p', 'mm', 'a4');
   const W = pdf.internal.pageSize.getWidth();
@@ -251,13 +259,6 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
     }
   };
 
-  const calcTotal = (order: any) => {
-    const parts = (order.orderParts ?? []).reduce((s: number, p: any) => s + p.totalPrice, 0);
-    const hours = (order.workHours ?? []).reduce((s: number, h: any) => s + h.totalCost, 0);
-    const costs = (order.additionalCosts ?? []).reduce((s: number, c: any) => s + c.amount, 0);
-    return parts + hours + costs;
-  };
-
   // Bloco de texto livre (rótulo + conteúdo com quebra automática de linha).
   // Não renderiza nada se o campo estiver vazio.
   const textBlock = (label: string, value?: string | null) => {
@@ -291,10 +292,12 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
   nl(6);
 
   let grandTotal = 0;
+  let totalPaid = 0;
 
   for (const order of orders) {
-    const orderTotal = calcTotal(order);
-    grandTotal += orderTotal;
+    const t = order.totals;
+    grandTotal += t.grandTotal;
+    totalPaid += t.totalPaid;
 
     // Mantém a OS junta; se não couber inteira, começa em página nova.
     checkPage(46);
@@ -364,13 +367,38 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
       }
     }
 
+    // Deslocamento / viagem — km rodados e horas de viagem, com suas taxas
+    if (t.travelTotal > 0) {
+      checkPage(18);
+      text('Deslocamento', L + 3, y, { size: 7, bold: true, color: [80,80,80] });
+      nl(4);
+      hline(y, [225,225,225]);
+      nl(3.5);
+      if (t.travelKmTotal > 0) {
+        checkPage(6);
+        text('Quilometragem', L + 4, y, { size: 8 });
+        text(`${num(order.travelKm)} km`, L + 96, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(order.travelKmRate), L + 128, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(t.travelKmTotal), RR, y, { size: 8, bold: true, align: 'right' });
+        nl(5);
+      }
+      if (t.travelHourTotal > 0) {
+        checkPage(6);
+        text('Horas de viagem', L + 4, y, { size: 8 });
+        text(`${num(order.travelHours)}h`, L + 96, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(order.travelHourRate), L + 128, y, { size: 8, align: 'right', color: [100,100,100] });
+        text(fmt(t.travelHourTotal), RR, y, { size: 8, bold: true, align: 'right' });
+        nl(5);
+      }
+    }
+
     // Valor final da OS
     checkPage(10);
     nl(1);
     hline(y, [180,180,180]);
     nl(4.5);
     text('Total da OS', L + 3, y, { size: 9, bold: true });
-    text(fmt(orderTotal), RR, y, { size: 9, bold: true, align: 'right' });
+    text(fmt(t.grandTotal), RR, y, { size: 9, bold: true, align: 'right' });
     nl(5);
 
     // Contorno do cartão — só quando a OS coube inteira na página
@@ -391,6 +419,21 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
   text('TOTAL GERAL', L, y, { size: 13, bold: true });
   text(fmt(grandTotal), R, y, { size: 13, bold: true, align: 'right' });
 
+  // Pagamentos recebidos e saldo em aberto
+  if (totalPaid > 0) {
+    const remaining = grandTotal - totalPaid;
+    checkPage(14);
+    nl(6);
+    text('Pago', L, y, { size: 9, color: [100,100,100] });
+    text(fmt(totalPaid), R, y, { size: 9, align: 'right', color: [21, 128, 61] });
+    nl(5);
+    text('Saldo a Pagar', L, y, { size: 10, bold: true });
+    text(fmt(remaining), R, y, {
+      size: 10, bold: true, align: 'right',
+      color: remaining > 0 ? [185, 28, 28] : [21, 128, 61],
+    });
+  }
+
   // PIX
   if (pixKey) {
     checkPage(22);
@@ -405,7 +448,7 @@ async function gerarPdfFaturamento(orders: any[], customerName: string, monthLab
   }
 
   // Rodapé em todas as páginas
-  const totalPages = (pdf as any).internal.getNumberOfPages();
+  const totalPages = pdf.getNumberOfPages();
   for (let i = 1; i <= totalPages; i++) {
     pdf.setPage(i);
     text(`Página ${i} de ${totalPages}`, W / 2, H - 5, { size: 7, color: [180,180,180], align: 'center' });
@@ -451,7 +494,6 @@ function BillingSection() {
   const [customerId, setCustomerId] = useState('');
   const [month, setMonth] = useState(currentDate.getMonth() + 1);
   const [year, setYear] = useState(currentDate.getFullYear());
-  const [querying, setQuerying] = useState(false);
   const [loadingPdf, setLoadingPdf] = useState(false);
   const [queryKey, setQueryKey] = useState<null | { customerId: string; month: number; year: number }>(null);
 
@@ -465,7 +507,7 @@ function BillingSection() {
     queryFn: () => api.get('/users/me').then(r => r.data),
   });
 
-  const { data: orders = [], isFetching } = useQuery<any[]>({
+  const { data: orders = [], isFetching } = useQuery<BillingOrder[]>({
     queryKey: ['billing-report', queryKey],
     queryFn: () => {
       if (!queryKey) return [];
@@ -478,14 +520,9 @@ function BillingSection() {
     enabled: !!queryKey,
   });
 
-  const calcTotal = (order: any) => {
-    const parts = (order.orderParts ?? []).reduce((s: number, p: any) => s + p.totalPrice, 0);
-    const hours = (order.workHours ?? []).reduce((s: number, h: any) => s + h.totalCost, 0);
-    const costs = (order.additionalCosts ?? []).reduce((s: number, c: any) => s + c.amount, 0);
-    return parts + hours + costs;
-  };
-
-  const grandTotal = orders.reduce((s, o) => s + calcTotal(o), 0);
+  const grandTotal = orders.reduce((s, o) => s + o.totals.grandTotal, 0);
+  const totalPaid = orders.reduce((s, o) => s + o.totals.totalPaid, 0);
+  const remaining = grandTotal - totalPaid;
 
   const selectedCustomer = customers.find(c => c.id === customerId);
   const monthLabel = `${MONTHS_PT[month - 1]} ${year}`;
@@ -583,7 +620,7 @@ function BillingSection() {
                       <td className="px-4 py-3 font-medium">#{o.orderNumber}</td>
                       <td className="px-4 py-3 text-muted-foreground hidden sm:table-cell">{o.equipment || '—'}</td>
                       <td className="px-4 py-3 text-muted-foreground hidden md:table-cell">{fmtDate(o.entryDate)}</td>
-                      <td className="px-4 py-3 text-right font-semibold">{fmt(calcTotal(o))}</td>
+                      <td className="px-4 py-3 text-right font-semibold">{fmt(o.totals.grandTotal)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -595,6 +632,15 @@ function BillingSection() {
                 <div>
                   <p className="text-xs text-muted-foreground">{orders.length} OS · {monthLabel}</p>
                   <p className="text-lg font-bold">Total: {fmt(grandTotal)}</p>
+                  {totalPaid > 0 && (
+                    <p className="text-xs mt-0.5">
+                      <span className="text-green-600">Pago {fmt(totalPaid)}</span>
+                      <span className="text-muted-foreground"> · </span>
+                      <span className={remaining > 0 ? 'text-red-500' : 'text-green-600'}>
+                        Saldo {fmt(remaining)}
+                      </span>
+                    </p>
+                  )}
                 </div>
                 <Button onClick={handlePdf} disabled={loadingPdf} variant="outline">
                   <Download className="size-4" />
@@ -627,28 +673,22 @@ export default function RelatoriosPage() {
   const [loadingMensal, setLoadingMensal] = useState(false);
   const [loadingAnual, setLoadingAnual] = useState(false);
 
-  const { data: dashboard } = useQuery({
+  const { data: dashboard } = useQuery<DashboardReport>({
     queryKey: ['reports-dashboard'],
     queryFn: () => api.get('/reports/dashboard').then(r => r.data),
   });
 
-  const { data: monthlyRevenue = [] } = useQuery<
-    { month: number; label: string; revenue: number }[]
-  >({
+  const { data: monthlyRevenue = [] } = useQuery<MonthlyRevenue[]>({
     queryKey: ['reports-monthly', year],
     queryFn: () => api.get('/reports/monthly-revenue', { params: { year } }).then(r => r.data),
   });
 
-  const { data: byStatus = [] } = useQuery<
-    { status: string; label: string; count: number }[]
-  >({
+  const { data: byStatus = [] } = useQuery<StatusCount[]>({
     queryKey: ['reports-status'],
     queryFn: () => api.get('/reports/orders-by-status').then(r => r.data),
   });
 
-  const { data: topCustomers = [] } = useQuery<
-    { customerId: string; name: string; count: number }[]
-  >({
+  const { data: topCustomers = [] } = useQuery<TopCustomer[]>({
     queryKey: ['reports-customers'],
     queryFn: () => api.get('/reports/top-customers').then(r => r.data),
   });
