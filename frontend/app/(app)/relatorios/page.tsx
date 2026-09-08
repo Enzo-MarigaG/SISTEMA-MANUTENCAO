@@ -314,6 +314,7 @@ async function gerarPdfFaturamento(orders: BillingOrder[], customerName: string,
     nl(4.5);
 
     // Descrições — só as que foram preenchidas na OS
+    textBlock('Equipamento', order.equipment);
     textBlock('Problema Relatado', order.problemReported);
     textBlock('Serviço Realizado', order.serviceDone);
 
